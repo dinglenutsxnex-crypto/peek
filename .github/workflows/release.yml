@@ -1,0 +1,89 @@
+name: Release APK
+
+on:
+  workflow_dispatch:
+  release:
+    types:
+      - published
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      HAS_SIGNING_SECRETS: ${{ secrets.KEYSTORE_BASE64 != '' && secrets.KEY_ALIAS != '' && secrets.KEYSTORE_PASSWORD != '' && secrets.KEY_PASSWORD != '' }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: gradle/actions/wrapper-validation@v3
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build release APK
+        run: ./gradlew --no-daemon assembleRelease
+
+      - name: Sign APK
+        if: ${{ env.HAS_SIGNING_SECRETS == 'true' }}
+        id: sign_app
+        uses: r0adkll/sign-android-release@v1
+        with:
+          releaseDirectory: app/build/outputs/apk/release
+          signingKeyBase64: ${{ secrets.KEYSTORE_BASE64 }}
+          alias: ${{ secrets.KEY_ALIAS }}
+          keyStorePassword: ${{ secrets.KEYSTORE_PASSWORD }}
+          keyPassword: ${{ secrets.KEY_PASSWORD }}
+
+      - name: Select APK artifact
+        id: artifact
+        shell: bash
+        run: |
+          signed_path=""
+          if [ "${HAS_SIGNING_SECRETS}" = "true" ]; then
+            signed_path="${{ steps.sign_app.outputs.signedReleaseFile }}"
+          fi
+          if [ -n "$signed_path" ]; then
+            artifact_path="$signed_path"
+            release_body=""
+          else
+            artifact_path="app/build/outputs/apk/release/app-release-unsigned.apk"
+            release_body="> Note: This APK is unsigned because signing secrets were not configured for this workflow run."
+          fi
+
+          echo "path=$artifact_path" >> "$GITHUB_OUTPUT"
+          echo "name=$(basename "$artifact_path")" >> "$GITHUB_OUTPUT"
+
+          {
+            echo "body<<EOF"
+            echo "$release_body"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Upload APK artifact
+        if: ${{ github.event_name == 'workflow_dispatch' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.artifact.outputs.name }}
+          path: ${{ steps.artifact.outputs.path }}
+
+      - name: Publish GitHub release
+        if: ${{ github.event_name == 'release' }}
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ steps.artifact.outputs.path }}
+          generate_release_notes: true
+          body: ${{ steps.artifact.outputs.body }}

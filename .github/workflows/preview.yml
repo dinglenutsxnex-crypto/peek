@@ -1,0 +1,75 @@
+name: Preview APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+
+permissions:
+  contents: write
+
+concurrency:
+  group: preview-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+
+      - uses: gradle/actions/wrapper-validation@v3
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: gradle
+
+      - name: Grant execute permission for gradlew
+        run: chmod +x gradlew
+
+      - name: Build preview debug APK
+        run: ./gradlew --no-daemon assembleDebug
+
+      - name: Prepare preview APK
+        id: preview_apk
+        shell: bash
+        run: |
+          preview_path="app/build/outputs/apk/debug/Android-Disassembler-preview-debug.apk"
+          cp app/build/outputs/apk/debug/app-debug.apk "$preview_path"
+          echo "path=$preview_path" >> "$GITHUB_OUTPUT"
+
+      - name: Upload preview APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Android-Disassembler-preview-debug-apk
+          path: ${{ steps.preview_apk.outputs.path }}
+
+      - name: Update rolling preview tag
+        shell: bash
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f preview-latest "$GITHUB_SHA"
+          git push --force origin refs/tags/preview-latest
+
+      - name: Publish preview prerelease
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: preview-latest
+          prerelease: true
+          name: Preview latest
+          files: ${{ steps.preview_apk.outputs.path }}
+          body: |
+            Latest debug-signed preview build for Android-Disassembler.
+
+            - Branch: `${{ github.ref_name }}`
+            - Commit: `${{ github.sha }}`
+            - APK type: `debug`
+
+            This asset is intended for trying the latest branch build before a formal signed release.

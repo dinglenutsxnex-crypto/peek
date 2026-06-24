@@ -1,0 +1,5 @@
+capstone/include/* linguist-vendored
+capstone2/include/* linguist-vendored
+app/src/main/cpp/elfio/*.hpp linguist-vendored
+app/src/main/cpp/plthook/*.c linguist-vendored
+app/src/main/cpp/plthook/*.h linguist-vendored
