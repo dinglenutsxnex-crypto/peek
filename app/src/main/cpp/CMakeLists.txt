@@ -162,10 +162,10 @@ add_library(decompiler_core STATIC
     decompiler/slaformat.cc
     decompiler/compression.cc
     decompiler/filemanage.cc
-    # --- EXTRA (remainder of LIBDECOMP_NAMES; bfd_arch/loadimage_bfd omitted) ---
-    decompiler/analyzesigs.cc
+    # --- EXTRA (remainder of LIBDECOMP_NAMES; bfd_arch/loadimage_bfd/analyzesigs/codedata
+    #     omitted — all four directly depend on <bfd.h> from GNU binutils, unavailable
+    #     in the Android NDK sysroot) ---
     decompiler/callgraph.cc
-    decompiler/codedata.cc
     decompiler/ifacedecomp.cc
     decompiler/ifaceterm.cc
     decompiler/inject_sleigh.cc
