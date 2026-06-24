@@ -16,14 +16,16 @@
         android:textSize="12sp"
         android:textColor="@color/addr_color"
         android:layout_marginEnd="12dp"
-        android:minWidth="100dp" />
+        android:minWidth="100dp"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/tvName"
         android:layout_width="0dp"
         android:layout_height="wrap_content"
         android:layout_weight="1"
-        android:textSize="13sp"
+        android:textSize="14sp"
+        android:fontFamily="monospace"
         android:textColor="@color/text_primary"
         android:ellipsize="end"
         android:singleLine="true" />

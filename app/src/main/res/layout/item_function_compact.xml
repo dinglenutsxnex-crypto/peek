@@ -20,14 +20,15 @@
         android:textSize="9sp"
         android:textColor="@color/addr_color"
         android:maxLines="1"
-        android:ellipsize="end" />
+        android:ellipsize="end"
+        android:visibility="gone" />
 
     <TextView
         android:id="@+id/tvName"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:fontFamily="monospace"
-        android:textSize="11sp"
+        android:textSize="14sp"
         android:textColor="@color/text_primary"
         android:maxLines="1"
         android:ellipsize="end" />

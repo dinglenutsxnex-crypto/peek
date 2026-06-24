@@ -10,7 +10,11 @@
         android:id="@+id/rvHex"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:overScrollMode="never" />
+        android:overScrollMode="never"
+        android:scrollbars="vertical"
+        android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
+        android:scrollbarSize="2dp"
+        android:fadeScrollbars="false" />
 
     <ProgressBar
         android:id="@+id/progressBar"
