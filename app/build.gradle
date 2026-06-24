@@ -158,6 +158,8 @@ dependencies {
     implementation 'com.google.firebase:firebase-analytics-ktx'
     implementation 'com.google.firebase:firebase-crashlytics-ktx'
 
+    // Add binutils dependency for MachineType
+    implementation 'nl.lxtreme.binutils:binutils:0.18'
 
 //    implementation 'mnemonik:mnemonik:2.0.2'
     implementation 'androidx.legacy:legacy-support-v4:1.0.0'
