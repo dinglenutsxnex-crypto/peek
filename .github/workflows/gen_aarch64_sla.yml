@@ -1,0 +1,139 @@
+name: Generate AARCH64.sla
+
+# One-shot, manually triggered workflow.
+# Produces AARCH64.sla from the Ghidra 12.1.2 SLEIGH compiler + AARCH64
+# language spec, entirely on the host (x86_64 Linux) — NOT cross-compiled
+# for Android.  Trigger once, download the artifact, commit it to the repo.
+
+on:
+  workflow_dispatch:
+
+jobs:
+  generate-sla:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repo (for vendored decompiler sources)
+        uses: actions/checkout@v4
+
+      - name: Install host build tools
+        run: sudo apt-get install -y --no-install-recommends bison flex g++ zlib1g-dev
+
+      # ------------------------------------------------------------------ #
+      # Fetch the three SLACOMP sources absent from the vendored tree.      #
+      # Everything else (CORE + SLEIGH groups) is already in               #
+      # app/src/main/cpp/decompiler/ from Ghidra_12.1.2_build.            #
+      # ------------------------------------------------------------------ #
+      - name: Fetch SLACOMP sources from Ghidra_12.1.2_build
+        run: |
+          GHIDRA="https://raw.githubusercontent.com/NationalSecurityAgency/ghidra/Ghidra_12.1.2_build/Ghidra/Features/Decompiler/src/decompile/cpp"
+          mkdir -p slacomp_build
+          curl -fsSL "$GHIDRA/slgh_compile.cc" -o slacomp_build/slgh_compile.cc
+          curl -fsSL "$GHIDRA/slghparse.y"      -o slacomp_build/slghparse.y
+          curl -fsSL "$GHIDRA/slghscan.l"       -o slacomp_build/slghscan.l
+          echo "=== fetched SLACOMP files ==="
+          wc -l slacomp_build/slgh_compile.cc slacomp_build/slghparse.y slacomp_build/slghscan.l
+
+      # ------------------------------------------------------------------ #
+      # Fetch AARCH64 language files from the same tag.                    #
+      # ------------------------------------------------------------------ #
+      - name: Fetch AARCH64 language files from Ghidra_12.1.2_build
+        run: |
+          LANG="https://raw.githubusercontent.com/NationalSecurityAgency/ghidra/Ghidra_12.1.2_build/Ghidra/Processors/AARCH64/data/languages"
+          mkdir -p aarch64_lang
+          for f in \
+            AARCH64.slaspec \
+            AARCH64base.sinc \
+            AARCH64instructions.sinc \
+            AARCH64ldst.sinc \
+            AARCH64neon.sinc \
+            AARCH64sve.sinc \
+            AARCH64_AMXext.sinc \
+            AARCH64_base_PACoptions.sinc; do
+            curl -fsSL "$LANG/$f" -o "aarch64_lang/$f"
+            echo "  fetched $f ($(wc -c < aarch64_lang/$f) bytes)"
+          done
+
+      # ------------------------------------------------------------------ #
+      # Generate slghparse.cc / slghparse.hh from the bison grammar, and   #
+      # slghscan.cc from the flex lexer.  The generated slghparse.hh in    #
+      # slacomp_build/ shadows the pre-generated one in the decompiler/    #
+      # tree because slacomp_build/ is first on the include path.         #
+      # ------------------------------------------------------------------ #
+      - name: Generate parser and lexer
+        working-directory: slacomp_build
+        run: |
+          bison -o slghparse.cc --defines=slghparse.hh slghparse.y
+          flex  -o slghscan.cc  slghscan.l
+          echo "=== generated parser/lexer ==="
+          wc -l slghparse.cc slghparse.hh slghscan.cc
+
+      # ------------------------------------------------------------------ #
+      # Compile the SLEIGH compiler as a plain host x86_64 executable.     #
+      # Source list = CORE + SLEIGH + SLACOMP (mirrors Ghidra Makefile's   #
+      # SLEIGH_NAMES variable).  All CORE/SLEIGH files come from the       #
+      # vendored decompiler/ tree; the three SLACOMP files from above.    #
+      # ------------------------------------------------------------------ #
+      - name: Compile sleigh_compile (host, x86_64)
+        run: |
+          DECOMP="${GITHUB_WORKSPACE}/app/src/main/cpp/decompiler"
+          BDIR="${GITHUB_WORKSPACE}/slacomp_build"
+          g++ -std=c++17 -O2 \
+            -I"${BDIR}" \
+            -I"${DECOMP}" \
+            -o "${BDIR}/sleigh_compile" \
+            \
+            "${BDIR}/slgh_compile.cc" \
+            "${BDIR}/slghparse.cc" \
+            "${BDIR}/slghscan.cc" \
+            \
+            "${DECOMP}/xml.cc" \
+            "${DECOMP}/marshal.cc" \
+            "${DECOMP}/space.cc" \
+            "${DECOMP}/float.cc" \
+            "${DECOMP}/address.cc" \
+            "${DECOMP}/pcoderaw.cc" \
+            "${DECOMP}/translate.cc" \
+            "${DECOMP}/opcodes.cc" \
+            "${DECOMP}/globalcontext.cc" \
+            \
+            "${DECOMP}/sleigh.cc" \
+            "${DECOMP}/pcodeparse.cc" \
+            "${DECOMP}/pcodecompile.cc" \
+            "${DECOMP}/sleighbase.cc" \
+            "${DECOMP}/slghsymbol.cc" \
+            "${DECOMP}/slghpatexpress.cc" \
+            "${DECOMP}/slghpattern.cc" \
+            "${DECOMP}/semantics.cc" \
+            "${DECOMP}/context.cc" \
+            "${DECOMP}/slaformat.cc" \
+            "${DECOMP}/compression.cc" \
+            "${DECOMP}/filemanage.cc" \
+            \
+            -lz
+          echo "=== sleigh_compile built ==="
+          file "${BDIR}/sleigh_compile"
+
+      # ------------------------------------------------------------------ #
+      # Run the SLEIGH compiler.  It writes AARCH64.sla alongside          #
+      # AARCH64.slaspec in the same directory.                             #
+      # ------------------------------------------------------------------ #
+      - name: Run SLEIGH compiler → AARCH64.sla
+        run: |
+          ./slacomp_build/sleigh_compile aarch64_lang/AARCH64.slaspec
+          echo "=== output ==="
+          ls -lh aarch64_lang/AARCH64.sla
+          SIZE=$(wc -c < aarch64_lang/AARCH64.sla)
+          echo "Size: ${SIZE} bytes"
+          if [ "$SIZE" -lt 102400 ]; then
+            echo "ERROR: AARCH64.sla is suspiciously small (< 100 KB)" >&2
+            exit 1
+          fi
+
+      - name: Upload AARCH64.sla artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: AARCH64-sla
+          path: aarch64_lang/AARCH64.sla
+          if-no-files-found: error
+          retention-days: 90
