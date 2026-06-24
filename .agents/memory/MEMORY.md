@@ -1,0 +1,1 @@
+- [PEEK Android project](peek-android.md) — pure Android NDK project, no web server, no Replit preview; build via GitHub Actions CI

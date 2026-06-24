@@ -1,0 +1,43 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Base palette — dark terminal aesthetic -->
+    <color name="bg_dark">#0D0D0F</color>
+    <color name="bg_surface">#151519</color>
+    <color name="bg_elevated">#1C1C22</color>
+    <color name="divider">#2A2A35</color>
+
+    <!-- Text -->
+    <color name="text_primary">#E8E8F0</color>
+    <color name="text_secondary">#808098</color>
+
+    <!-- Accent — matches the eye iris (white/grey) -->
+    <color name="accent">#A6A6A6</color>
+    <color name="accent_bright">#D0D0E0</color>
+
+    <!-- Function list selected row -->
+    <color name="fn_selected">#22222E</color>
+    <!-- Divider drag handle highlight -->
+    <color name="divider_active">#3A3A50</color>
+
+    <!-- Listing view columns -->
+    <color name="addr_color">#6A9FD8</color>
+    <color name="bytes_color">#4A7C59</color>
+    <color name="mnemonic_color">#C8AA6E</color>
+    <color name="operand_color">#E8E8F0</color>
+
+    <!-- Function kind coloring -->
+    <color name="fn_thunk">#C87090</color>      <!-- muted magenta/rose for thunk stubs -->
+    <color name="fn_local">#606078</color>       <!-- dimmed grey for auto-generated sub_ -->
+
+    <!-- Copy button flash -->
+    <color name="copy_flash">#5ACC80</color>     <!-- light green for 2-second copied flash -->
+
+    <!-- System / Material required -->
+    <color name="purple_200">#FFBB86FC</color>
+    <color name="purple_500">#FF6200EE</color>
+    <color name="purple_700">#FF3700B3</color>
+    <color name="teal_200">#FF03DAC5</color>
+    <color name="teal_700">#FF018786</color>
+    <color name="black">#FF000000</color>
+    <color name="white">#FFFFFFFF</color>
+</resources>

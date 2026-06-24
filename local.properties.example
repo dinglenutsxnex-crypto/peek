@@ -1,0 +1,5 @@
+# Copy this file to local.properties and fill in your local paths.
+# local.properties is NOT committed to version control.
+#
+# sdk.dir=/path/to/your/Android/Sdk
+# ndk.dir=/path/to/your/Android/Sdk/ndk/27.2.12479018

@@ -1,0 +1,122 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    android:id="@+id/rootLayout"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:background="@color/bg_dark">
+
+    <!-- Full-width header: spans the whole screen, sits above the split. -->
+    <androidx.appcompat.widget.Toolbar
+        android:id="@+id/toolbar"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:minHeight="32dp"
+        android:background="@color/bg_elevated"
+        app:titleTextColor="@color/text_primary"
+        app:subtitleTextColor="@color/text_secondary"
+        app:navigationIconTint="@color/text_primary" />
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="@color/divider" />
+
+    <!-- Below the header: left function panel + draggable divider + content. -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:orientation="horizontal">
+
+        <!-- Left: function panel -->
+        <LinearLayout
+            android:id="@+id/leftPanel"
+            android:layout_width="160dp"
+            android:layout_height="match_parent"
+            android:orientation="vertical"
+            android:background="@color/bg_surface">
+
+            <EditText
+                android:id="@+id/etSearch"
+                android:layout_width="match_parent"
+                android:layout_height="36dp"
+                android:hint="search…"
+                android:textSize="11sp"
+                android:textColor="@color/text_primary"
+                android:textColorHint="@color/text_secondary"
+                android:paddingStart="8dp"
+                android:paddingEnd="8dp"
+                android:background="@color/bg_elevated"
+                android:inputType="textNoSuggestions"
+                android:maxLines="1"
+                android:imeOptions="actionSearch" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvFunctions"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1"
+                android:overScrollMode="never"
+                android:clipToPadding="false" />
+
+        </LinearLayout>
+
+        <!-- Draggable divider: 12dp touch target, 2dp visible line centered -->
+        <FrameLayout
+            android:id="@+id/dividerHandle"
+            android:layout_width="12dp"
+            android:layout_height="match_parent"
+            android:background="@android:color/transparent">
+
+            <View
+                android:layout_width="2dp"
+                android:layout_height="match_parent"
+                android:layout_gravity="center_horizontal"
+                android:background="@color/divider" />
+
+        </FrameLayout>
+
+        <!-- Right: tabs + content (toolbar no longer lives in here) -->
+        <LinearLayout
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <com.google.android.material.tabs.TabLayout
+                android:id="@+id/tabLayout"
+                android:layout_width="match_parent"
+                android:layout_height="40dp"
+                android:background="@color/bg_elevated"
+                app:tabTextColor="@color/text_secondary"
+                app:tabSelectedTextColor="@color/text_primary"
+                app:tabIndicatorColor="@color/accent_bright"
+                app:tabIndicatorHeight="2dp"
+                app:tabTextAppearance="@style/TabTextSmall"
+                app:tabMode="fixed"
+                app:tabGravity="fill" />
+
+            <View
+                android:layout_width="match_parent"
+                android:layout_height="1dp"
+                android:background="@color/divider" />
+
+            <androidx.viewpager2.widget.ViewPager2
+                android:id="@+id/viewPager"
+                android:layout_width="match_parent"
+                android:layout_height="0dp"
+                android:layout_weight="1" />
+
+        </LinearLayout>
+
+    </LinearLayout>
+
+</LinearLayout>
