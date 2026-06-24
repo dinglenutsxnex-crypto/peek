@@ -1,0 +1,55 @@
+The decompiler pipeline is proven end-to-end on two real test cases (a PLT
+thunk and a full function with stack frame, branches, and indirect calls).
+Both passed detailed verification — real structured pseudocode, not
+reformatted disassembly. Time to wire this into the actual app.
+
+Add a JNI function in peek_jni.cpp:
+
+    external fun decompileFunction(handle: Long, address: Long): String
+
+Implementation:
+1. Look up the function's address range from the existing functions table
+   (same data already used to render the ASM tab) — given a function's start
+   address, get its byte range from the loaded binary using the same
+   data/lookup path the ASM tab already uses.
+2. Pull the raw bytes for that range from the loaded binary (already in
+   memory/mapped from the existing ELF parsing — reuse that, don't re-read
+   the file).
+3. Run those bytes through the SAME pipeline already proven in
+   host_test/decompile_test.cpp: SLEIGH lift (using the bundled
+   AARCH64.sla from assets) → p-code → decompiler action pipeline →
+   pretty-print.
+4. Return the resulting pseudocode string across JNI.
+
+Caching: add a `pseudocode` column to the functions table (TEXT, nullable).
+On first decompile of a function, store the result. On subsequent requests
+for the same function, return the cached value instead of re-running the
+pipeline.
+
+Threading: this must run on a background thread/coroutine — never the UI
+thread. While waiting, the UI should show a loading state.
+
+UI: add a "Pseudocode" entry to the existing tab system (respecting the
+view-options toggle already built — same mechanism as ASM/Hex/Exports/
+Imports). Selecting it for the currently-active function calls
+decompileFunction and displays the returned string in a scrollable,
+monospace text view — reuse styling consistent with the existing ASM tab
+(same font/colors where it makes sense) but this is a single text block, not
+a per-row instruction layout.
+
+Apply the same text-selection fix already done for the ASM tab
+(textIsSelectable="true") to this pseudocode view too, so long-press/copy
+works the same way.
+
+Test this against JNI_OnLoad specifically (the real function in the loaded
+.so, not the test harness) and report the EXACT literal pseudocode string
+that appears in the app's Pseudocode tab. It should match (or very closely
+resemble — real addresses instead of test addresses, possibly different
+GOT/PLT offsets) what the host test already produced for this same
+function. If it differs significantly in structure (different number of
+locals, missing branches, fewer/more call expressions than the host test
+produced), say so explicitly — that would mean something is different
+between the host test's manually-fed bytes and what's actually being read
+from the live binary in-app (e.g. wrong address range, wrong byte offset,
+endianness, or base-address handling), and needs debugging rather than
+being shipped as-is.

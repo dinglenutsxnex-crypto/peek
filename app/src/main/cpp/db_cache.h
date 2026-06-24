@@ -14,12 +14,13 @@
 // ---------------------------------------------------------------------------
 
 struct DbFunction {
-    int64_t     id;
-    uint64_t    address;
-    uint64_t    size;
+    int64_t     id          = -1;
+    uint64_t    address     = 0;
+    uint64_t    size        = 0;
     std::string name;
-    uint64_t    end_address;
-    int         kind = 1;   // 0=local(sub_), 1=named, 2=thunk(j_)
+    uint64_t    end_address = 0;
+    int         kind        = 1;   // 0=local(sub_), 1=named, 2=thunk(j_)
+    std::string pseudocode;        // empty until decompiled
 };
 
 struct DbInstruction {
@@ -79,6 +80,7 @@ public:
 
     // Query helpers
     std::vector<DbFunction>    get_functions(int64_t binary_id);
+    DbFunction                 get_function_by_id(int64_t func_id);
     std::vector<DbInstruction> get_instructions(int64_t function_id,
                                                  int limit,
                                                  int offset);
@@ -87,6 +89,10 @@ public:
     int64_t                    get_function_id(int64_t binary_id,
                                                uint64_t address);
     int64_t                    get_instruction_count(int64_t function_id);
+
+    // Pseudocode cache — empty string means not yet decompiled.
+    std::string get_pseudocode(int64_t func_id);
+    bool        store_pseudocode(int64_t func_id, const std::string& code);
 
     std::string last_error() const { return last_error_; }
 

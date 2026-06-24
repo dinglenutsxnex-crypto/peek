@@ -109,6 +109,25 @@ object PeekNative {
     }
 
     // -----------------------------------------------------------------------
+    // Decompiler
+    // -----------------------------------------------------------------------
+
+    /**
+     * One-time init: registers the SLEIGH spec directory (assets extracted
+     * to filesDir/decompiler_spec). Must be called before decompileFunction.
+     * Returns true on success.
+     */
+    fun initDecompiler(specDir: String): Boolean = nativeInitDecompiler(specDir)
+
+    /**
+     * Decompile a single function identified by its DB id.
+     * Runs the full Ghidra pipeline on the function's raw bytes and caches
+     * the pseudocode in SQLite. Returns empty string on failure.
+     */
+    fun decompileFunction(handle: Long, funcId: Long): String =
+        if (handle == 0L) "" else nativeDecompileFunction(handle, funcId)
+
+    // -----------------------------------------------------------------------
     // Raw JNI declarations
     // -----------------------------------------------------------------------
 
@@ -128,4 +147,7 @@ object PeekNative {
 
     @JvmStatic private external fun nativeGetSymbols(handle: Long): LongArray
     @JvmStatic private external fun nativeGetSymbolStrings(handle: Long): Array<String>
+
+    @JvmStatic private external fun nativeInitDecompiler(specDir: String): Boolean
+    @JvmStatic private external fun nativeDecompileFunction(handle: Long, funcId: Long): String
 }

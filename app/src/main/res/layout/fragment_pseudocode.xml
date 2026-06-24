@@ -1,0 +1,63 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout
+    xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@color/bg_dark">
+
+    <ScrollView
+        android:id="@+id/scrollView"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:overScrollMode="never"
+        android:scrollbars="vertical"
+        android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
+        android:scrollbarSize="2dp"
+        android:fadeScrollbars="false"
+        android:paddingBottom="56dp"
+        android:clipToPadding="false">
+
+        <TextView
+            android:id="@+id/tvPseudocode"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:textColor="@color/operand_color"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:lineSpacingMultiplier="1.25"
+            android:textIsSelectable="true" />
+
+    </ScrollView>
+
+    <ProgressBar
+        android:id="@+id/progressBar"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:visibility="gone" />
+
+    <TextView
+        android:id="@+id/tvEmpty"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:text="Select a function"
+        android:textColor="@color/text_secondary"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <ImageButton
+        android:id="@+id/btnCopy"
+        android:layout_width="32dp"
+        android:layout_height="32dp"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:padding="5dp"
+        android:src="@drawable/ic_copy"
+        android:tint="@color/text_secondary"
+        android:background="@drawable/bg_copy_btn"
+        android:contentDescription="Copy pseudocode"
+        android:visibility="gone" />
+
+</FrameLayout>

@@ -54,6 +54,11 @@ class MainActivity : AppCompatActivity() {
             insets
         }
 
+        lifecycleScope.launch(Dispatchers.IO) {
+            val specDir = extractDecompilerAssets()
+            PeekNative.initDecompiler(specDir)
+        }
+
         b.btnOpen.setOnClickListener {
             filePicker.launch(arrayOf("application/octet-stream", "*/*"))
         }
@@ -96,6 +101,27 @@ class MainActivity : AppCompatActivity() {
             )
             b.tvStatus.text = ""
         }
+    }
+
+    /**
+     * Extracts decompiler SLEIGH spec assets to filesDir/decompiler_spec/ on
+     * first run (skips files that already exist).  Returns the directory path.
+     */
+    private fun extractDecompilerAssets(): String {
+        val dir = File(filesDir, "decompiler_spec")
+        dir.mkdirs()
+        val files = listOf("AARCH64.sla", "AARCH64.ldefs", "AARCH64.pspec", "AARCH64.cspec")
+        for (name in files) {
+            val dest = File(dir, name)
+            if (!dest.exists()) {
+                try {
+                    assets.open(name).use { input ->
+                        FileOutputStream(dest).use { out -> input.copyTo(out) }
+                    }
+                } catch (_: Exception) {}
+            }
+        }
+        return dir.absolutePath
     }
 
     private fun copyToCache(uri: Uri): String? {

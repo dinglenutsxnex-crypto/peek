@@ -12,10 +12,11 @@ class AnalysisPagerAdapter(
     override fun getItemCount(): Int = tabs.size
 
     override fun createFragment(position: Int): Fragment = when (tabs[position].id) {
-        TabId.ASM     -> DisassemblyFragment()
-        TabId.HEX     -> HexFragment()
-        TabId.EXPORTS -> SymbolsFragment.newInstance(showImports = false)
-        TabId.IMPORTS -> SymbolsFragment.newInstance(showImports = true)
+        TabId.ASM        -> DisassemblyFragment()
+        TabId.HEX        -> HexFragment()
+        TabId.EXPORTS    -> SymbolsFragment.newInstance(showImports = false)
+        TabId.IMPORTS    -> SymbolsFragment.newInstance(showImports = true)
+        TabId.PSEUDOCODE -> PseudocodeFragment()
     }
 
     // Stable IDs let ViewPager2 reuse existing fragment instances

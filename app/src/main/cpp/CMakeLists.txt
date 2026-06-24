@@ -215,11 +215,23 @@ add_library(peek_native SHARED
     disassembler.cpp
     xref_detector.cpp
     db_cache.cpp
+    decompiler_bridge.cpp
     peek_jni.cpp
+)
+
+# decompiler_bridge.cpp wraps Ghidra headers and must be compiled WITH
+# C++ exceptions and RTTI (the decompiler_core library requires both).
+# The per-file property overrides the target-wide -fno-exceptions/-fno-rtti
+# set below for the other translation units.
+set_source_files_properties(
+    decompiler_bridge.cpp
+    PROPERTIES COMPILE_FLAGS "-fexceptions -frtti"
 )
 
 target_include_directories(peek_native PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/decompiler
+    ${CMAKE_CURRENT_BINARY_DIR}/decompiler
     ${capstone_SOURCE_DIR}/include
     ${sqlite3_amalgamation_SOURCE_DIR}
 )

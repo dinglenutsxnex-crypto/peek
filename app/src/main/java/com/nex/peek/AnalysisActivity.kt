@@ -234,13 +234,14 @@ class AnalysisActivity : AppCompatActivity() {
 
         // Canonical tab order — must stay stable; drives sort order too.
         val ALL_TABS = listOf(
-            TabSpec(TabId.ASM,     "ASM"),
-            TabSpec(TabId.HEX,     "HEX"),
-            TabSpec(TabId.EXPORTS, "EXPORTS"),
-            TabSpec(TabId.IMPORTS, "IMPORTS")
+            TabSpec(TabId.ASM,        "ASM"),
+            TabSpec(TabId.PSEUDOCODE, "DECOMP"),
+            TabSpec(TabId.HEX,        "HEX"),
+            TabSpec(TabId.EXPORTS,    "EXPORTS"),
+            TabSpec(TabId.IMPORTS,    "IMPORTS")
         )
 
-        // ASM + EXPORTS + IMPORTS on; HEX off by default.
-        val DEFAULT_VISIBLE = mutableListOf(TabId.ASM, TabId.EXPORTS, TabId.IMPORTS)
+        // ASM + DECOMP + EXPORTS + IMPORTS on; HEX off by default.
+        val DEFAULT_VISIBLE = mutableListOf(TabId.ASM, TabId.PSEUDOCODE, TabId.EXPORTS, TabId.IMPORTS)
     }
 }

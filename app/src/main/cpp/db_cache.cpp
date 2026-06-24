@@ -48,9 +48,12 @@ bool AnalysisDb::exec(const char* sql) {
 }
 
 bool AnalysisDb::create_schema() {
-    // Migration for DBs that predate the kind column — silently ignored on new DBs.
+    // Migrations for DBs that predate new columns — silently ignored on new DBs.
     sqlite3_exec(db_,
         "ALTER TABLE functions ADD COLUMN kind INTEGER NOT NULL DEFAULT 1",
+        nullptr, nullptr, nullptr);
+    sqlite3_exec(db_,
+        "ALTER TABLE functions ADD COLUMN pseudocode TEXT",
         nullptr, nullptr, nullptr);
 
     const char* ddl = R"SQL(
@@ -67,7 +70,8 @@ bool AnalysisDb::create_schema() {
             size         INTEGER NOT NULL,
             name         TEXT    NOT NULL DEFAULT '',
             end_address  INTEGER NOT NULL,
-            kind         INTEGER NOT NULL DEFAULT 1
+            kind         INTEGER NOT NULL DEFAULT 1,
+            pseudocode   TEXT
         );
         CREATE INDEX IF NOT EXISTS idx_functions_binary ON functions(binary_id);
         CREATE INDEX IF NOT EXISTS idx_functions_addr   ON functions(address);
@@ -213,24 +217,43 @@ bool AnalysisDb::store_xrefs(int64_t binary_id, const std::vector<Xref>& xrefs) 
     return true;
 }
 
+static DbFunction row_to_function(sqlite3_stmt* stmt) {
+    DbFunction f;
+    f.id          = sqlite3_column_int64(stmt, 0);
+    f.address     = (uint64_t)sqlite3_column_int64(stmt, 1);
+    f.size        = (uint64_t)sqlite3_column_int64(stmt, 2);
+    f.name        = (const char*)sqlite3_column_text(stmt, 3);
+    f.end_address = (uint64_t)sqlite3_column_int64(stmt, 4);
+    f.kind        = sqlite3_column_int(stmt, 5);
+    const unsigned char* pc = sqlite3_column_text(stmt, 6);
+    if (pc) f.pseudocode = reinterpret_cast<const char*>(pc);
+    return f;
+}
+
 std::vector<DbFunction> AnalysisDb::get_functions(int64_t binary_id) {
     std::vector<DbFunction> result;
     sqlite3_stmt* stmt = nullptr;
-    const char* sql = "SELECT id,address,size,name,end_address,kind FROM functions WHERE binary_id=? ORDER BY address";
+    const char* sql = "SELECT id,address,size,name,end_address,kind,pseudocode FROM functions WHERE binary_id=? ORDER BY address";
     sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
     sqlite3_bind_int64(stmt, 1, binary_id);
     while (sqlite3_step(stmt) == SQLITE_ROW) {
-        DbFunction f;
-        f.id          = sqlite3_column_int64(stmt, 0);
-        f.address     = (uint64_t)sqlite3_column_int64(stmt, 1);
-        f.size        = (uint64_t)sqlite3_column_int64(stmt, 2);
-        f.name        = (const char*)sqlite3_column_text(stmt, 3);
-        f.end_address = (uint64_t)sqlite3_column_int64(stmt, 4);
-        f.kind        = sqlite3_column_int(stmt, 5);
-        result.push_back(f);
+        result.push_back(row_to_function(stmt));
     }
     sqlite3_finalize(stmt);
     return result;
+}
+
+DbFunction AnalysisDb::get_function_by_id(int64_t func_id) {
+    DbFunction f;
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT id,address,size,name,end_address,kind,pseudocode FROM functions WHERE id=? LIMIT 1";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return f;
+    sqlite3_bind_int64(stmt, 1, func_id);
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        f = row_to_function(stmt);
+    }
+    sqlite3_finalize(stmt);
+    return f;
 }
 
 std::vector<DbInstruction> AnalysisDb::get_instructions(int64_t function_id,
@@ -315,4 +338,29 @@ int64_t AnalysisDb::get_instruction_count(int64_t function_id) {
     if (sqlite3_step(stmt) == SQLITE_ROW) cnt = sqlite3_column_int64(stmt, 0);
     sqlite3_finalize(stmt);
     return cnt;
+}
+
+std::string AnalysisDb::get_pseudocode(int64_t func_id) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "SELECT pseudocode FROM functions WHERE id=? LIMIT 1";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return "";
+    sqlite3_bind_int64(stmt, 1, func_id);
+    std::string result;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        const unsigned char* p = sqlite3_column_text(stmt, 0);
+        if (p) result = reinterpret_cast<const char*>(p);
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}
+
+bool AnalysisDb::store_pseudocode(int64_t func_id, const std::string& code) {
+    sqlite3_stmt* stmt = nullptr;
+    const char* sql = "UPDATE functions SET pseudocode=? WHERE id=?";
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return false;
+    sqlite3_bind_text (stmt, 1, code.c_str(), -1, SQLITE_TRANSIENT);
+    sqlite3_bind_int64(stmt, 2, func_id);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+    return true;
 }

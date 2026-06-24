@@ -14,12 +14,15 @@
  *   nativeGetXrefTypes(handle,address)          → Array<String>
  *   nativeGetSymbols(handle)                    → LongArray [addr,isImport, …]
  *   nativeGetSymbolStrings(handle)              → Array<String> [name,typeStr, …]
+ *   nativeInitDecompiler(specDir)               → Boolean
+ *   nativeDecompileFunction(handle, funcId)     → String
  */
 
 #include "elf_parser.h"
 #include "disassembler.h"
 #include "xref_detector.h"
 #include "db_cache.h"
+#include "decompiler_bridge.h"
 
 #include <jni.h>
 #include <android/log.h>
@@ -44,6 +47,7 @@
 struct AnalysisContext {
     std::string              file_path;
     std::string              file_hash;
+    std::string              tmp_dir;   // writable dir for decompiler temp files
     int64_t                  binary_id = -1;
     std::string              last_error;
     std::unique_ptr<AnalysisDb> db;
@@ -435,7 +439,9 @@ Java_com_nex_peek_PeekNative_nativeOpenBinary(JNIEnv* env, jobject,
         ctx->last_error = "Could not hash file: " + ctx->file_path;
         return reinterpret_cast<jlong>(ctx);
     }
-    std::string db_path = jstr(env, jdb_dir) + "/peek_cache.db";
+    std::string db_dir  = jstr(env, jdb_dir);
+    ctx->tmp_dir        = db_dir;
+    std::string db_path = db_dir + "/peek_cache.db";
     ctx->db = std::make_unique<AnalysisDb>(db_path);
     if (!ctx->db->open()) {
         ctx->last_error = "Cannot open DB: " + ctx->db->last_error();
@@ -619,6 +625,72 @@ Java_com_nex_peek_PeekNative_nativeGetSymbolStrings(JNIEnv* env, jobject, jlong 
         set((jsize)(i*2+1), syms[i].type_str);
     }
     return arr;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_nex_peek_PeekNative_nativeInitDecompiler(JNIEnv* env, jobject,
+                                                    jstring jspec_dir) {
+    std::string spec_dir = jstr(env, jspec_dir);
+    int ok = peek_decompiler_init(spec_dir.c_str());
+    LOGI("Decompiler init: specDir=%s result=%d", spec_dir.c_str(), ok);
+    return ok ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
+                                                       jlong h, jlong func_id) {
+    if (!h) return env->NewStringUTF("");
+    auto* ctx = reinterpret_cast<AnalysisContext*>(h);
+    if (ctx->binary_id < 0) return env->NewStringUTF("");
+
+    // Check cached pseudocode first.
+    std::string cached = ctx->db->get_pseudocode((int64_t)func_id);
+    if (!cached.empty()) {
+        LOGI("Pseudocode cache hit funcId=%lld", (long long)func_id);
+        return env->NewStringUTF(cached.c_str());
+    }
+
+    // Fetch function record from DB.
+    DbFunction fn = ctx->db->get_function_by_id((int64_t)func_id);
+    if (fn.id < 0) {
+        LOGE("Function not found funcId=%lld", (long long)func_id);
+        return env->NewStringUTF("");
+    }
+
+    // Re-parse ELF to obtain raw bytes for the function.
+    ElfParseResult elf = elf_parse(ctx->file_path);
+    if (!elf.ok) {
+        LOGE("ELF re-parse failed: %s", elf.error.c_str());
+        return env->NewStringUTF("");
+    }
+
+    const uint8_t* data = va_to_ptr(elf, fn.address, fn.size);
+    if (!data) {
+        LOGE("va_to_ptr failed addr=0x%llx size=%llu",
+             (unsigned long long)fn.address, (unsigned long long)fn.size);
+        return env->NewStringUTF("");
+    }
+
+    // Unique temp file per function to allow future parallelism.
+    std::ostringstream tmp_ss;
+    tmp_ss << ctx->tmp_dir << "/decomp_" << std::hex << (int64_t)func_id << ".bin";
+    std::string tmp_path = tmp_ss.str();
+
+    char* result_cstr = peek_decompile_bytes(
+        data, (size_t)fn.size, fn.name.c_str(), tmp_path.c_str());
+
+    if (!result_cstr) {
+        LOGE("Decompile returned null for %s", fn.name.c_str());
+        return env->NewStringUTF("");
+    }
+
+    std::string result(result_cstr);
+    free(result_cstr);
+
+    ctx->db->store_pseudocode((int64_t)func_id, result);
+    LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
+
+    return env->NewStringUTF(result.c_str());
 }
 
 } // extern "C"
