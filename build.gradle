@@ -29,7 +29,10 @@ allprojects {
         google()
         mavenCentral()
         maven { url "https://jitpack.io" }
-        maven { url "https://maven.consulo.io/" }
+        maven {
+            url "https://maven.consulo.io/"
+            allowInsecureProtocol = true
+        }
 //        maven { url 'https://dl.bintray.com/guardian/android' }
 //        maven { url 'http://dev.open-rnd.net:30844/content/groups/public/' }
     }
