@@ -1,18 +1,20 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <!-- Base palette — dark terminal aesthetic -->
-    <color name="bg_dark">#0D0D0F</color>
-    <color name="bg_surface">#151519</color>
-    <color name="bg_elevated">#1C1C22</color>
-    <color name="divider">#2A2A35</color>
+    <color name="bg_dark">#1A1A1E</color>
+    <color name="bg_surface">#222228</color>
+    <color name="bg_elevated">#2A2A32</color>
+    <color name="divider">#404048</color>
 
     <!-- Text -->
-    <color name="text_primary">#E8E8F0</color>
-    <color name="text_secondary">#808098</color>
+    <color name="text_primary">#FFFFFF</color>
+    <color name="text_secondary">#B0B0C0</color>
 
     <!-- Accent — matches the eye iris (white/grey) -->
-    <color name="accent">#A6A6A6</color>
-    <color name="accent_bright">#D0D0E0</color>
+    <color name="accent">#CCCCCC</color>
+    <color name="accent_bright">#F0F0F0</color>
+
+    <color name="scrollbar_thumb">#60FFFFFF</color>
 
     <!-- Function list selected row -->
     <color name="fn_selected">#22222E</color>

@@ -18,7 +18,8 @@
         android:textSize="11sp"
         android:textColor="@color/addr_color"
         android:layout_marginEnd="8dp"
-        android:minWidth="88dp" />
+        android:minWidth="88dp"
+        android:visibility="gone" />
 
     <LinearLayout
         android:layout_width="0dp"
@@ -30,7 +31,8 @@
             android:id="@+id/tvName"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:textSize="12sp"
+            android:textSize="14sp"
+            android:fontFamily="monospace"
             android:textColor="@color/text_primary"
             android:ellipsize="end"
             android:singleLine="true" />
@@ -40,6 +42,7 @@
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
             android:textSize="10sp"
+            android:fontFamily="monospace"
             android:textColor="@color/text_secondary" />
 
     </LinearLayout>

@@ -7,6 +7,7 @@
         <item name="colorSecondary">@color/accent</item>
         <item name="colorOnSecondary">@color/bg_dark</item>
         <item name="android:colorBackground">@color/bg_dark</item>
+        <item name="android:fontFamily">monospace</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="actionBarStyle">@style/PeekActionBar</item>
@@ -19,6 +20,7 @@
         <item name="colorSecondary">@color/accent</item>
         <item name="colorOnSecondary">@color/bg_dark</item>
         <item name="android:colorBackground">@color/bg_dark</item>
+        <item name="android:fontFamily">monospace</item>
         <item name="android:statusBarColor">@android:color/transparent</item>
         <item name="android:navigationBarColor">@android:color/transparent</item>
         <item name="android:windowLayoutInDisplayCutoutMode">shortEdges</item>
@@ -45,5 +47,10 @@
         <item name="android:textSize">11sp</item>
         <item name="android:fontFamily">monospace</item>
         <item name="textAllCaps">true</item>
+    </style>
+
+    <style name="PeekToolbarTitle" parent="TextAppearance.AppCompat.Widget.ActionBar.Title">
+        <item name="android:textSize">13sp</item>
+        <item name="android:fontFamily">monospace</item>
     </style>
 </resources>

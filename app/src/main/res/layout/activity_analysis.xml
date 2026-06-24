@@ -1,122 +1,167 @@
 <?xml version="1.0" encoding="utf-8"?>
-<LinearLayout
+<FrameLayout
     xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
-    android:id="@+id/rootLayout"
+    android:id="@+id/rootContainer"
     android:layout_width="match_parent"
-    android:layout_height="match_parent"
-    android:orientation="vertical"
-    android:background="@color/bg_dark">
+    android:layout_height="match_parent">
 
-    <!-- Full-width header: spans the whole screen, sits above the split. -->
-    <androidx.appcompat.widget.Toolbar
-        android:id="@+id/toolbar"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:minHeight="32dp"
-        android:background="@color/bg_elevated"
-        app:titleTextColor="@color/text_primary"
-        app:subtitleTextColor="@color/text_secondary"
-        app:navigationIconTint="@color/text_primary" />
-
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="1dp"
-        android:background="@color/divider" />
-
-    <!-- Below the header: left function panel + draggable divider + content. -->
     <LinearLayout
+        android:id="@+id/rootLayout"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:orientation="horizontal">
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:background="@color/bg_dark">
 
-        <!-- Left: function panel -->
+        <!-- Full-width header: spans the whole screen, sits above the split. -->
+        <androidx.appcompat.widget.Toolbar
+            android:id="@+id/toolbar"
+            android:layout_width="match_parent"
+            android:layout_height="32dp"
+            android:minHeight="32dp"
+            android:background="@color/bg_elevated"
+            app:titleTextColor="@color/text_primary"
+            app:subtitleTextColor="@color/text_secondary"
+            app:navigationIconTint="@color/text_primary"
+            app:contentInsetStart="8dp"
+            app:contentInsetStartWithNavigation="8dp"
+            app:titleTextAppearance="@style/PeekToolbarTitle" />
+
+        <View
+            android:layout_width="match_parent"
+            android:layout_height="1dp"
+            android:background="@color/divider" />
+
+        <!-- Below the header: left function panel + draggable divider + content. -->
         <LinearLayout
-            android:id="@+id/leftPanel"
-            android:layout_width="160dp"
-            android:layout_height="match_parent"
-            android:orientation="vertical"
-            android:background="@color/bg_surface">
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_weight="1"
+            android:orientation="horizontal">
 
-            <EditText
-                android:id="@+id/etSearch"
-                android:layout_width="match_parent"
-                android:layout_height="36dp"
-                android:hint="search…"
-                android:textSize="11sp"
-                android:textColor="@color/text_primary"
-                android:textColorHint="@color/text_secondary"
-                android:paddingStart="8dp"
-                android:paddingEnd="8dp"
-                android:background="@color/bg_elevated"
-                android:inputType="textNoSuggestions"
-                android:maxLines="1"
-                android:imeOptions="actionSearch" />
+            <!-- Left: function panel -->
+            <LinearLayout
+                android:id="@+id/leftPanel"
+                android:layout_width="160dp"
+                android:layout_height="match_parent"
+                android:orientation="vertical"
+                android:background="@color/bg_surface">
 
+                <EditText
+                    android:id="@+id/etSearch"
+                    android:layout_width="match_parent"
+                    android:layout_height="36dp"
+                    android:hint="search…"
+                    android:textSize="11sp"
+                    android:textColor="@color/text_primary"
+                    android:textColorHint="@color/text_secondary"
+                    android:paddingStart="8dp"
+                    android:paddingEnd="8dp"
+                    android:background="@color/bg_elevated"
+                    android:inputType="textNoSuggestions"
+                    android:maxLines="1"
+                    android:imeOptions="actionSearch" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvFunctions"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1"
+                    android:overScrollMode="never"
+                    android:clipToPadding="false"
+                    android:scrollbars="vertical"
+                    android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
+                    android:scrollbarSize="2dp"
+                    android:fadeScrollbars="false" />
+
+            </LinearLayout>
+
+            <!-- Draggable divider: 8dp solid bar -->
             <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
+                android:id="@+id/dividerHandle"
+                android:layout_width="8dp"
+                android:layout_height="match_parent"
                 android:background="@color/divider" />
 
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvFunctions"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
+            <!-- Right: tabs + content (toolbar no longer lives in here) -->
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="match_parent"
                 android:layout_weight="1"
-                android:overScrollMode="never"
-                android:clipToPadding="false" />
+                android:orientation="vertical">
+
+                <com.google.android.material.tabs.TabLayout
+                    android:id="@+id/tabLayout"
+                    android:layout_width="match_parent"
+                    android:layout_height="32dp"
+                    android:background="@color/bg_elevated"
+                    app:tabTextColor="@color/text_secondary"
+                    app:tabSelectedTextColor="@color/text_primary"
+                    app:tabIndicatorColor="@color/accent_bright"
+                    app:tabIndicatorHeight="2dp"
+                    app:tabTextAppearance="@style/TabTextSmall"
+                    app:tabMode="fixed"
+                    app:tabGravity="fill"
+                    app:tabRippleColor="@android:color/transparent" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+
+                <androidx.viewpager2.widget.ViewPager2
+                    android:id="@+id/viewPager"
+                    android:layout_width="match_parent"
+                    android:layout_height="0dp"
+                    android:layout_weight="1" />
+
+            </LinearLayout>
 
         </LinearLayout>
 
-        <!-- Draggable divider: 12dp touch target, 2dp visible line centered -->
-        <FrameLayout
-            android:id="@+id/dividerHandle"
-            android:layout_width="12dp"
-            android:layout_height="match_parent"
-            android:background="@android:color/transparent">
+    </LinearLayout>
 
-            <View
-                android:layout_width="2dp"
-                android:layout_height="match_parent"
-                android:layout_gravity="center_horizontal"
-                android:background="@color/divider" />
+    <!-- Side panel for view options, hidden by default -->
+    <FrameLayout
+        android:id="@+id/viewOptionsPanel"
+        android:layout_width="160dp"
+        android:layout_height="match_parent"
+        android:layout_gravity="start"
+        android:background="@color/bg_surface"
+        android:visibility="gone"
+        android:elevation="8dp"
+        android:clickable="true"
+        android:focusable="true">
 
-        </FrameLayout>
-
-        <!-- Right: tabs + content (toolbar no longer lives in here) -->
         <LinearLayout
-            android:layout_width="0dp"
+            android:layout_width="match_parent"
             android:layout_height="match_parent"
-            android:layout_weight="1"
             android:orientation="vertical">
 
-            <com.google.android.material.tabs.TabLayout
-                android:id="@+id/tabLayout"
+            <TextView
                 android:layout_width="match_parent"
-                android:layout_height="40dp"
+                android:layout_height="32dp"
                 android:background="@color/bg_elevated"
-                app:tabTextColor="@color/text_secondary"
-                app:tabSelectedTextColor="@color/text_primary"
-                app:tabIndicatorColor="@color/accent_bright"
-                app:tabIndicatorHeight="2dp"
-                app:tabTextAppearance="@style/TabTextSmall"
-                app:tabMode="fixed"
-                app:tabGravity="fill" />
+                android:gravity="center_vertical"
+                android:paddingStart="12dp"
+                android:text="VIEW OPTIONS"
+                android:textColor="@color/text_secondary"
+                android:textSize="10sp"
+                android:fontFamily="monospace" />
 
-            <View
-                android:layout_width="match_parent"
-                android:layout_height="1dp"
-                android:background="@color/divider" />
-
-            <androidx.viewpager2.widget.ViewPager2
-                android:id="@+id/viewPager"
+            <androidx.recyclerview.widget.RecyclerView
+                android:id="@+id/rvViewOptions"
                 android:layout_width="match_parent"
                 android:layout_height="0dp"
                 android:layout_weight="1" />
 
         </LinearLayout>
 
-    </LinearLayout>
+    </FrameLayout>
 
-</LinearLayout>
+</FrameLayout>

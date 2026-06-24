@@ -19,8 +19,10 @@ import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.recyclerview.widget.LinearLayoutManager
+import android.view.View
 import com.google.android.material.tabs.TabLayoutMediator
 import com.nex.peek.adapter.FunctionCompactAdapter
+import com.nex.peek.adapter.ViewOptionAdapter
 import com.nex.peek.databinding.ActivityAnalysisBinding
 import com.nex.peek.model.FunctionInfo
 import com.nex.peek.ui.AnalysisPagerAdapter
@@ -46,8 +48,9 @@ class AnalysisActivity : AppCompatActivity() {
         b = ActivityAnalysisBinding.inflate(layoutInflater)
         setContentView(b.root)
 
-        // Full immersive: hide nav bar, swipe to reveal transiently.
+        // Full immersive: hide both status and nav bars, swipe to reveal transiently.
         WindowInsetsControllerCompat(window, window.decorView).apply {
+            hide(WindowInsetsCompat.Type.statusBars())
             hide(WindowInsetsCompat.Type.navigationBars())
             systemBarsBehavior =
                 WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
@@ -118,38 +121,36 @@ class AnalysisActivity : AppCompatActivity() {
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         if (item.itemId == MENU_VIEW_OPTIONS) {
-            showTabPopup()
+            toggleViewOptions()
             return true
         }
         return super.onOptionsItemSelected(item)
     }
 
-    private fun showTabPopup() {
-        val popup = PopupMenu(this, b.toolbar)
-        ALL_TABS.forEachIndexed { idx, spec ->
-            val item = popup.menu.add(0, idx, idx, spec.label)
-            item.isCheckable = true
-            item.isChecked = activeTabs.contains(spec.id)
+    private fun toggleViewOptions() {
+        if (b.viewOptionsPanel.visibility == View.VISIBLE) {
+            b.viewOptionsPanel.visibility = View.GONE
+        } else {
+            b.viewOptionsPanel.visibility = View.VISIBLE
+            setupViewOptionsList()
         }
-        popup.setOnMenuItemClickListener { item ->
-            val spec = ALL_TABS[item.itemId]
-            if (activeTabs.contains(spec.id)) {
-                // Don't allow un-checking the last tab.
+    }
+
+    private fun setupViewOptionsList() {
+        b.rvViewOptions.layoutManager = LinearLayoutManager(this)
+        b.rvViewOptions.adapter = ViewOptionAdapter(ALL_TABS, activeTabs) { id ->
+            if (activeTabs.contains(id)) {
                 if (activeTabs.size > 1) {
-                    activeTabs.remove(spec.id)
-                    updateTabs()
-                    saveTabPrefs()
+                    activeTabs.remove(id)
                 }
             } else {
-                activeTabs.add(spec.id)
-                // Keep display order consistent with ALL_TABS canonical order.
+                activeTabs.add(id)
                 activeTabs.sortBy { tabId -> ALL_TABS.indexOfFirst { it.id == tabId } }
-                updateTabs()
-                saveTabPrefs()
             }
-            true
+            updateTabs()
+            saveTabPrefs()
+            setupViewOptionsList() // Refresh list
         }
-        popup.show()
     }
 
     private fun updateTabs() {
@@ -213,7 +214,9 @@ class AnalysisActivity : AppCompatActivity() {
                     true
                 }
                 MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> {
-                    b.dividerHandle.setBackgroundColor(0x00000000)
+                    b.dividerHandle.setBackgroundColor(
+                        resources.getColor(R.color.divider, theme)
+                    )
                     view.performClick()
                     true
                 }
