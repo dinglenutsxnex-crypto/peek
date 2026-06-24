@@ -47,6 +47,36 @@
                 android:orientation="vertical"
                 android:background="@color/bg_surface">
 
+            <!-- Expandable View Options -->
+            <LinearLayout
+                android:id="@+id/viewOptionsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="32dp"
+                    android:background="@color/bg_elevated"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:text="VIEW OPTIONS"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvViewOptions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+            </LinearLayout>
+
                 <EditText
                     android:id="@+id/etSearch"
                     android:layout_width="match_parent"
@@ -74,6 +104,7 @@
                     android:layout_weight="1"
                     android:overScrollMode="never"
                     android:clipToPadding="false"
+                    android:paddingTop="12dp"
                     android:scrollbars="vertical"
                     android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
                     android:scrollbarSize="2dp"
@@ -118,50 +149,13 @@
                     android:id="@+id/viewPager"
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
-                    android:layout_weight="1" />
+                android:layout_weight="1"
+                android:paddingTop="12dp" />
 
             </LinearLayout>
 
         </LinearLayout>
 
     </LinearLayout>
-
-    <!-- Side panel for view options, hidden by default -->
-    <FrameLayout
-        android:id="@+id/viewOptionsPanel"
-        android:layout_width="160dp"
-        android:layout_height="match_parent"
-        android:layout_gravity="start"
-        android:background="@color/bg_surface"
-        android:visibility="gone"
-        android:elevation="8dp"
-        android:clickable="true"
-        android:focusable="true">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="match_parent"
-            android:orientation="vertical">
-
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="32dp"
-                android:background="@color/bg_elevated"
-                android:gravity="center_vertical"
-                android:paddingStart="12dp"
-                android:text="VIEW OPTIONS"
-                android:textColor="@color/text_secondary"
-                android:textSize="10sp"
-                android:fontFamily="monospace" />
-
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvViewOptions"
-                android:layout_width="match_parent"
-                android:layout_height="0dp"
-                android:layout_weight="1" />
-
-        </LinearLayout>
-
-    </FrameLayout>
 
 </FrameLayout>

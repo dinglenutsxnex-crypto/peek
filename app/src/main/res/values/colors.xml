@@ -17,7 +17,7 @@
     <color name="scrollbar_thumb">#60FFFFFF</color>
 
     <!-- Function list selected row -->
-    <color name="fn_selected">#22222E</color>
+    <color name="fn_selected">#383842</color>
     <!-- Divider drag handle highlight -->
     <color name="divider_active">#3A3A50</color>
 
@@ -29,7 +29,7 @@
 
     <!-- Function kind coloring -->
     <color name="fn_thunk">#C87090</color>      <!-- muted magenta/rose for thunk stubs -->
-    <color name="fn_local">#606078</color>       <!-- dimmed grey for auto-generated sub_ -->
+    <color name="fn_local">#FFFFFF</color>       <!-- white for auto-generated sub_ -->
 
     <!-- Copy button flash -->
     <color name="copy_flash">#5ACC80</color>     <!-- light green for 2-second copied flash -->
