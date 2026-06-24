@@ -25,12 +25,15 @@ class ViewOptionAdapter(
         val isActive = activeTabs.contains(spec.id)
 
         holder.b.tvName.text = spec.label
-        holder.b.tvName.textSize = 13f
+        holder.b.tvName.textSize = 12f
         holder.b.tvAddress.visibility = android.view.View.GONE
         holder.b.tvType.visibility = android.view.View.GONE
 
-        holder.b.tvBadge.text = if (isActive) "ON" else "OFF"
+        // Using tvBadge as a "checkbox" indicator
+        holder.b.tvBadge.text = if (isActive) "✔" else ""
         holder.b.tvBadge.visibility = android.view.View.VISIBLE
+        holder.b.tvBadge.setBackgroundColor(0x00000000)
+        holder.b.tvBadge.setTextColor(if (isActive) 0xFFFFFFFF.toInt() else 0x40FFFFFF.toInt())
 
         holder.b.root.setOnClickListener {
             onToggle(spec.id)

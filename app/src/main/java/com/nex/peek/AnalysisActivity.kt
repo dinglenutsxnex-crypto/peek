@@ -128,10 +128,10 @@ class AnalysisActivity : AppCompatActivity() {
     }
 
     private fun toggleViewOptions() {
-        if (b.viewOptionsPanel.visibility == View.VISIBLE) {
-            b.viewOptionsPanel.visibility = View.GONE
+        if (b.viewOptionsContainer.visibility == View.VISIBLE) {
+            b.viewOptionsContainer.visibility = View.GONE
         } else {
-            b.viewOptionsPanel.visibility = View.VISIBLE
+            b.viewOptionsContainer.visibility = View.VISIBLE
             setupViewOptionsList()
         }
     }
