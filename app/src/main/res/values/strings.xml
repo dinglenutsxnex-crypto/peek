@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">PEEK</string>
+    <string name="subtitle">ARM64 .so Analyzer</string>
+    <string name="open_so_file">Open .so File</string>
+    <string name="search_hint">Search…</string>
+    <string name="xrefs">XRefs</string>
+    <string name="symbols">Symbols</string>
+</resources>
