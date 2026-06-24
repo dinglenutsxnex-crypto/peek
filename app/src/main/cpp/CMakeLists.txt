@@ -46,6 +46,25 @@ target_compile_options(sqlite3_lib PRIVATE
 )
 
 # ---------------------------------------------------------------------------
+# decompiler_core — static library for Ghidra C++ decompiler sources.
+# Compiled WITH exceptions and RTTI; do NOT add -fno-exceptions/-fno-rtti here.
+# ---------------------------------------------------------------------------
+add_library(decompiler_core STATIC
+    decompiler_core_stub.cpp
+)
+
+target_include_directories(decompiler_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}
+)
+
+target_compile_options(decompiler_core PRIVATE
+    -Wall
+    -Wextra
+    # Intentionally no -fno-exceptions and no -fno-rtti:
+    # decompiler_core needs both enabled for the Ghidra decompiler sources.
+)
+
+# ---------------------------------------------------------------------------
 # peek_native shared library
 # ---------------------------------------------------------------------------
 add_library(peek_native SHARED
@@ -63,6 +82,7 @@ target_include_directories(peek_native PRIVATE
 )
 
 target_link_libraries(peek_native
+    decompiler_core
     capstone
     sqlite3_lib
     android
