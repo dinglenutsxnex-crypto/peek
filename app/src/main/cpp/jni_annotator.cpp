@@ -1199,6 +1199,162 @@ static bool var_still_used(const std::vector<std::string>& lines,
     return false;
 }
 
+// ---------------------------------------------------------------------------
+// U0. xunknownN type resolution
+//
+// Ghidra emits "xunknown1 / xunknown2 / xunknown4 / xunknown8" when it
+// cannot determine the type of a local variable and only knows its width in
+// bytes.  Replace these with the matching C standard-width integer types so
+// every downstream pass (type inference, declaration rewriting, rename) sees
+// real type tokens instead of placeholders.
+// ---------------------------------------------------------------------------
+
+static std::string resolve_xunknown_types(const std::string& code) {
+    static const struct { const char* from; const char* to; } kMap[] = {
+        {"xunknown1", "uint8_t"},
+        {"xunknown2", "uint16_t"},
+        {"xunknown4", "uint32_t"},
+        {"xunknown8", "uint64_t"},
+    };
+    std::string result = code;
+    for (const auto& m : kMap) {
+        const std::string from(m.from);
+        const std::string to(m.to);
+        const size_t flen = from.size();
+        size_t pos = 0;
+        while ((pos = result.find(from, pos)) != std::string::npos) {
+            bool left_ok  = (pos == 0)               || !is_id(result[pos - 1]);
+            bool right_ok = (pos + flen >= result.size()) || !is_id(result[pos + flen]);
+            if (left_ok && right_ok) {
+                result.replace(pos, flen, to);
+                pos += to.size();
+            } else {
+                ++pos;
+            }
+        }
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// U3. Generic variable renaming
+//
+// After all other passes have run, variables still carrying Ghidra-generated
+// generic names (iVarN, xVarN, uVarN, pVarN, fVarN, aVarN) receive a short,
+// type-derived semantic name.
+//
+// Rename strategy (from declared type):
+//   pointer (* in type)        → "ptr"
+//   float / double             → "f"
+//   any integer / jni scalar   → "val"
+//   everything else            → "v"
+//
+// When multiple survivors share the same prefix they are numbered 1, 2, …;
+// a sole survivor of its prefix gets the bare name (no number).
+//
+// Applies to every function, JNI or not, after all other passes have fired.
+// ---------------------------------------------------------------------------
+
+static std::string rename_generic_vars(const std::string& code) {
+    // --- collect generic vars from declaration lines -----------------------
+    // A declaration line looks like (leading whitespace required):
+    //   "  uint32_t xVar3;"    or    "  JNIEnv *xVar1;"
+    // We take the last identifier before the terminal ';' as the var name.
+    struct GVar { std::string name; std::string type; };
+    std::vector<GVar> gvars;
+
+    std::vector<std::string> lines = split_lines(code);
+    for (const auto& line : lines) {
+        // Must be indented (local decl, not a top-level definition).
+        if (line.empty() || (line[0] != ' ' && line[0] != '\t')) continue;
+
+        size_t semi = line.rfind(';');
+        if (semi == std::string::npos) continue;
+        // No '=' on the line — pure declaration, not an assignment statement.
+        if (line.find('=') != std::string::npos &&
+            line.find('=') < semi) continue;
+        // Must not be a for/if/while statement.
+        size_t p0 = 0;
+        while (p0 < line.size() && (line[p0]==' '||line[p0]=='\t')) ++p0;
+        if (line.compare(p0, 3, "for") == 0 ||
+            line.compare(p0, 2, "if") == 0  ||
+            line.compare(p0, 5, "while") == 0) continue;
+
+        // Var name: last identifier before ';'
+        size_t ve = semi;
+        while (ve > p0 && (line[ve-1]==' '||line[ve-1]=='\t')) --ve;
+        if (ve <= p0) continue;
+        size_t vs = ve;
+        while (vs > p0 && is_id(line[vs-1])) --vs;
+        if (vs == ve) continue;
+        std::string varname(line, vs, ve - vs);
+        if (!is_generic_varname(varname)) continue;
+
+        // Type: everything from p0 to vs, stripped of trailing spaces/stars.
+        size_t te = vs;
+        while (te > p0 && (line[te-1]==' '||line[te-1]=='\t'||line[te-1]=='*')) --te;
+        std::string type_str(line, p0, te - p0);
+
+        gvars.push_back({varname, type_str});
+    }
+
+    if (gvars.empty()) return code;
+
+    // --- derive prefix from type -------------------------------------------
+    auto prefix_for = [](const std::string& type) -> const char* {
+        if (type.find('*') != std::string::npos) return "ptr";
+        if (type.find("float")  != std::string::npos ||
+            type.find("double") != std::string::npos) return "f";
+        // Broad integer match covers C/JNI scalar types.
+        if (type.find("int")     != std::string::npos ||
+            type.find("uint")    != std::string::npos ||
+            type.find("long")    != std::string::npos ||
+            type.find("short")   != std::string::npos ||
+            type.find("char")    != std::string::npos ||
+            type.find("bool")    != std::string::npos ||
+            type.find("jint")    != std::string::npos ||
+            type.find("jlong")   != std::string::npos ||
+            type.find("jbyte")   != std::string::npos ||
+            type.find("jchar")   != std::string::npos ||
+            type.find("jshort")  != std::string::npos ||
+            type.find("jfloat")  != std::string::npos ||
+            type.find("jdouble") != std::string::npos ||
+            type.find("jsize")   != std::string::npos ||
+            type.find("jboolean")!= std::string::npos) return "val";
+        return "v";
+    };
+
+    // Count vars per prefix so we know whether to add a number.
+    std::map<std::string, int> prefix_total;
+    for (const auto& gv : gvars)
+        prefix_total[prefix_for(gv.type)]++;
+
+    // Assign and apply renames in declaration order.
+    std::map<std::string, int> prefix_used;
+    std::string result = code;
+    for (const auto& gv : gvars) {
+        const char* pfx = prefix_for(gv.type);
+        int& used  = prefix_used[pfx];
+        int  total = prefix_total[pfx];
+        ++used;
+
+        std::string new_name;
+        if (total == 1) {
+            new_name = pfx;
+        } else {
+            char buf[32];
+            std::snprintf(buf, sizeof(buf), "%s%d", pfx, used);
+            new_name = buf;
+        }
+
+        // Never clobber a name that already exists in the output.
+        if (ident_exists(result, new_name)) continue;
+
+        result = replace_ident(result, gv.name, new_name);
+    }
+    return result;
+}
+
 static std::string strip_stack_canary(const std::string& code) {
     std::vector<std::string> lines = split_lines(code);
 
@@ -1328,7 +1484,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V7\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V8\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1340,11 +1496,16 @@ std::string jni_annotate(const std::string& func_name,
     // meaningful names based on usage, matching IDA-quality pseudocode output.
     // -----------------------------------------------------------------------
 
+    // ---- U0. Resolve Ghidra width-only type placeholders -------------------
+    // xunknown1/2/4/8 → uint8_t/uint16_t/uint32_t/uint64_t.
+    // Must run first so every downstream pass sees real C type tokens.
+    std::string result = resolve_xunknown_types(pseudocode);
+
     // ---- U1. Strip ARM64 stack canary boilerplate --------------------------
     // Removes: tpidr_el0 TLS load, canary value load, and the trailing
     // if-block that calls __stack_chk_fail on mismatch.  Declarations of the
     // removed variables are dropped when they become unused.
-    std::string result = strip_stack_canary(pseudocode);
+    result = strip_stack_canary(result);
 
     // ---- U2. Rename the return accumulator to "ret" ------------------------
     // Any generic iVarN / xVarN that appears exclusively in "return <var>;"
@@ -1354,7 +1515,10 @@ std::string jni_annotate(const std::string& func_name,
     // -----------------------------------------------------------------------
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
     // -----------------------------------------------------------------------
-    if (kind == JniKind::NONE) return result;
+    if (kind == JniKind::NONE) {
+        // ---- U3. Rename surviving generic vars (non-JNI functions) ---------
+        return rename_generic_vars(result);
+    }
 
     std::vector<std::string> lines = split_lines(result);
 
@@ -1408,6 +1572,11 @@ std::string jni_annotate(const std::string& func_name,
     // Detects RegisterNatives calls using stack-local struct fields and
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
+
+    // ---- U3. Rename surviving generic vars (JNI functions) -----------------
+    // Runs last so all JNI-specific names are settled before we fill in the
+    // remaining generic placeholders.
+    result = rename_generic_vars(result);
 
     return result;
 }
