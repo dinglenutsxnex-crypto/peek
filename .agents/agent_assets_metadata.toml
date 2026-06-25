@@ -12,3 +12,9 @@ id = "bZtHAwHE46E4YwW9ZsNhO"
 uri = "file://peek_repo.tar.gz"
 type = "unspecified"
 title = "peek_repo.tar.gz"
+
+[[outputs]]
+id = "4KR3-sD6nJbqKoE7Ih_bt"
+uri = "file://peek-repo.zip"
+type = "unspecified"
+title = "peek-repo.zip"
