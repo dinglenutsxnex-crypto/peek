@@ -140,7 +140,7 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
             // the original VA, not to address 0, so out-of-body targets
             // can wrap into the huge address space and trigger SLEIGH to
             // attempt disassembly of garbage bytes.
-            Address eaddr(ram, (uintb)len);
+            Address eaddr(ram, (uintb)(len - 1));
             fd->followFlow(baddr, eaddr);
             LOGI_B("[S3] followFlow OK for %s", func_name);
         } catch (const LowlevelError& e) {
