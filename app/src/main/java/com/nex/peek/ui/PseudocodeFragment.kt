@@ -71,7 +71,7 @@ class PseudocodeFragment : Fragment() {
                 }
                 b.tvEmpty.visibility = View.VISIBLE
             } else {
-                b.tvPseudocode.text = code
+                b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
                 b.btnCopy.visibility = View.VISIBLE
             }
         }

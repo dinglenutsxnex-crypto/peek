@@ -225,10 +225,5 @@ std::string jni_annotate(const std::string& func_name,
         result = replace_ident(result, "param_2", "thiz");
     }
 
-    // ---- Prepend a brief annotation notice -------------------------------
-    // Placed before the first non-comment, non-blank content so it appears
-    // at the top of the displayed pseudocode.
-    result = "/* [PEEK] JNI annotations applied */\n" + result;
-
     return result;
 }
