@@ -469,6 +469,16 @@ Java_com_nex_peek_PeekNative_nativeGetLastError(JNIEnv* env, jobject, jlong h) {
     return env->NewStringUTF(reinterpret_cast<AnalysisContext*>(h)->last_error.c_str());
 }
 
+// Declared in crash_handler.cpp — async-signal-safe native crash handler.
+extern "C" void peek_install_native_crash_handler(const char* crash_file_path);
+
+JNIEXPORT void JNICALL
+Java_com_nex_peek_PeekNative_nativeInstallCrashHandler(JNIEnv* env, jobject, jstring crashFilePath) {
+    const char* path = env->GetStringUTFChars(crashFilePath, nullptr);
+    peek_install_native_crash_handler(path);
+    env->ReleaseStringUTFChars(crashFilePath, path);
+}
+
 JNIEXPORT jlongArray JNICALL
 Java_com_nex_peek_PeekNative_nativeGetFunctionList(JNIEnv* env, jobject, jlong h) {
     if (!h) return env->NewLongArray(0);

@@ -38,6 +38,8 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
 
+        showPendingCrashIfAny()
+
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.navigationBars())
             systemBarsBehavior =
@@ -141,4 +143,41 @@ class MainActivity : AppCompatActivity() {
             if (cursor.moveToFirst() && col >= 0) cursor.getString(col) else null
         }
     }
+
+    /**
+     * If the app died last run (either a Java exception caught by
+     * PeekApplication's uncaught-exception handler, or a real native
+     * SIGSEGV/SIGABRT caught by the signal handler in crash_handler.cpp),
+     * a reason was written to this file just before death. Show it now —
+     * a Toast first (so it's visible without any interaction), and tap the
+     * Toast's anchor area isn't possible, so we also offer the full text
+     * via a dialog since native crash messages can be longer than a Toast
+     * comfortably displays. Then delete the file so it isn't shown again.
+     */
+    private fun showPendingCrashIfAny() {
+        val crashFile = File(filesDir, PeekApplication.CRASH_FILE_NAME)
+        if (!crashFile.exists()) return
+
+        val reason = try {
+            crashFile.readText().trim()
+        } catch (e: Exception) {
+            "Could not read crash file: ${e.message}"
+        }
+        crashFile.delete()
+
+        if (reason.isEmpty()) return
+
+        android.widget.Toast.makeText(
+            this,
+            "App crashed last run — tap here for details",
+            android.widget.Toast.LENGTH_LONG
+        ).show()
+
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("Last run crashed")
+            .setMessage(reason)
+            .setPositiveButton("OK", null)
+            .show()
+    }
 }
+

@@ -134,6 +134,17 @@ object PeekNative {
     @JvmStatic private external fun nativeOpenBinary(path: String, dbDir: String): Long
     @JvmStatic private external fun nativeCloseBinary(handle: Long)
     @JvmStatic private external fun nativeGetLastError(handle: Long): String
+    @JvmStatic private external fun nativeInstallCrashHandler(crashFilePath: String)
+
+    /**
+     * Installs a native (C/C++ level) signal handler so that a real crash
+     * (SIGSEGV/SIGABRT/etc, the kind that kills the process with no Java
+     * exception at all) writes a short reason to [crashFilePath] before
+     * the process dies. Call once, as early as possible (Application.onCreate).
+     */
+    @JvmStatic fun installNativeCrashHandler(crashFilePath: String) {
+        nativeInstallCrashHandler(crashFilePath)
+    }
 
     @JvmStatic private external fun nativeGetFunctionList(handle: Long): LongArray
     @JvmStatic private external fun nativeGetFunctionNames(handle: Long): Array<String>

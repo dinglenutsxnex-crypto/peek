@@ -216,6 +216,7 @@ add_library(peek_native SHARED
     xref_detector.cpp
     db_cache.cpp
     decompiler_bridge.cpp
+    crash_handler.cpp
     peek_jni.cpp
 )
 
