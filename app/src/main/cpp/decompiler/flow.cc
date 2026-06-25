@@ -94,7 +94,7 @@ PcodeOp *FlowInfo::fallthruOp(PcodeOp *op) const
   if (iter != obank.endDead()) {
     retop = *iter;
     if (!retop->isInstructionStart()) // If within same instruction
-      return retop;		// Then this is the fall thru
+      return retop;             // Then this is the fall thru
   }
   // Find address of instruction containing this op
   map<Address,VisitStat>::const_iterator miter;
@@ -123,7 +123,7 @@ PcodeOp *FlowInfo::target(const Address &addr) const
     if (!seq.getAddr().isInvalid()) {
       PcodeOp *retop = obank.findOp(seq);
       if (retop != (PcodeOp *)0)
-	return retop;
+        return retop;
       break;
     }
     // Visit fall thru address in case of no-op
@@ -153,7 +153,7 @@ PcodeOp *FlowInfo::findRelTarget(PcodeOp *op,Address &res) const
   uintm id = op->getTime() + addr.getOffset();
   SeqNum seqnum(op->getAddr(),id);
   PcodeOp *retop = obank.findOp(seqnum);
-  if (retop != (PcodeOp *)0)	// Is this a "properly" internal branch
+  if (retop != (PcodeOp *)0)    // Is this a "properly" internal branch
     return retop;
 
   // Now we check if the relative branch is really to the next instruction
@@ -167,7 +167,7 @@ PcodeOp *FlowInfo::findRelTarget(PcodeOp *op,Address &res) const
       --miter;
       res = (*miter).first + (*miter).second.size;
       if (op->getAddr() < res)
-	return (PcodeOp *)0;	// Indicate that res has the fallthru address
+        return (PcodeOp *)0;    // Indicate that res has the fallthru address
     }
   }
   ostringstream errmsg;
@@ -188,14 +188,18 @@ PcodeOp *FlowInfo::branchTarget(PcodeOp *op) const
 
 {
   const Address &addr(op->getIn(0)->getAddr());
-  if (addr.isConstant()) {	// This is a relative sequence number
+  if (addr.isConstant()) {      // This is a relative sequence number
     Address res;
     PcodeOp *retop = findRelTarget(op,res);
     if (retop != (PcodeOp *)0)
       return retop;
+    if ((res < baddr)||(eaddr < res))
+      return (PcodeOp *)0;      // Out-of-bounds relative target — no edge
     return target(res);
   }
-  return target(addr);	// Otherwise a normal address target
+  if ((addr < baddr)||(eaddr < addr))
+    return (PcodeOp *)0;        // Out-of-bounds absolute target — no edge
+  return target(addr);  // Otherwise a normal address target
 }
 
 /// Replace any reference to the op being inlined with the first op of the inlined sequence.
@@ -205,9 +209,9 @@ void FlowInfo::updateTarget(PcodeOp *oldOp,PcodeOp *newOp)
 
 {
   map<Address,VisitStat>::iterator viter = visited.find(oldOp->getAddr());
-  if (viter != visited.end()) {				// Check if -oldOp- is a possible branch target
-    if ((*viter).second.seqnum == oldOp->getSeqNum())	// (if injection op is the first op for its address)
-      (*viter).second.seqnum = newOp->getSeqNum();	//    change the seqnum to the newOp
+  if (viter != visited.end()) {                         // Check if -oldOp- is a possible branch target
+    if ((*viter).second.seqnum == oldOp->getSeqNum())   // (if injection op is the first op for its address)
+      (*viter).second.seqnum = newOp->getSeqNum();      //    change the seqnum to the newOp
   }
 }
 
@@ -225,7 +229,7 @@ void FlowInfo::newAddress(PcodeOp *from,const Address &to)
     return;
   }
 
-  if (seenInstruction(to)) {	// If we have seen this address before
+  if (seenInstruction(to)) {    // If we have seen this address before
     PcodeOp *op = target(to);
     data.opMarkStartBasic(op);
     return;
@@ -266,7 +270,7 @@ PcodeOp *FlowInfo::xrefControlFlow(list<PcodeOp *>::const_iterator oiter,bool &s
 {
   PcodeOp *op = (PcodeOp *)0;
   isfallthru = false;
-  uintm maxtime=0;	// Deepest internal relative branch
+  uintm maxtime=0;      // Deepest internal relative branch
   while(oiter != obank.endDead()) {
     op = *oiter++;
     if (startbasic) {
@@ -276,95 +280,95 @@ PcodeOp *FlowInfo::xrefControlFlow(list<PcodeOp *>::const_iterator oiter,bool &s
     switch(op->code()) {
     case CPUI_CBRANCH:
     {
-	const Address &destaddr( op->getIn(0)->getAddr() );
-	if (destaddr.isConstant()) {
-	  Address fallThruAddr;
-	  PcodeOp *destop = findRelTarget(op,fallThruAddr);
-	  if (destop != (PcodeOp *)0) {
-	    data.opMarkStartBasic(destop);	// Make sure the target op is a basic block start
-	    uintm newtime = destop->getTime();
-	    if (newtime > maxtime)
-	      maxtime = newtime;
-	  }
-	  else
-	    isfallthru = true;		// Relative branch is to end of instruction
-	}
-	else
-	  newAddress(op,destaddr); // Generate branch address
-	startbasic = true;
+        const Address &destaddr( op->getIn(0)->getAddr() );
+        if (destaddr.isConstant()) {
+          Address fallThruAddr;
+          PcodeOp *destop = findRelTarget(op,fallThruAddr);
+          if (destop != (PcodeOp *)0) {
+            data.opMarkStartBasic(destop);      // Make sure the target op is a basic block start
+            uintm newtime = destop->getTime();
+            if (newtime > maxtime)
+              maxtime = newtime;
+          }
+          else
+            isfallthru = true;          // Relative branch is to end of instruction
+        }
+        else
+          newAddress(op,destaddr); // Generate branch address
+        startbasic = true;
     }
     break;
     case CPUI_BRANCH:
       {
-	const Address &destaddr( op->getIn(0)->getAddr() );
-	if (destaddr.isConstant()) {
-	  Address fallThruAddr;
-	  PcodeOp *destop = findRelTarget(op,fallThruAddr);
-	  if (destop != (PcodeOp *)0) {
-	    data.opMarkStartBasic(destop);	// Make sure the target op is a basic block start
-	    uintm newtime = destop->getTime();
-	    if (newtime > maxtime)
-	      maxtime = newtime;
-	  }
-	  else
-	    isfallthru = true;		// Relative branch is to end of instruction
-	}
-	else
-	  newAddress(op,destaddr); // Generate branch address
-	if (op->getTime() >= maxtime) {
-	  deleteRemainingOps(oiter);
-	  oiter = obank.endDead();
-	}
-	startbasic = true;
+        const Address &destaddr( op->getIn(0)->getAddr() );
+        if (destaddr.isConstant()) {
+          Address fallThruAddr;
+          PcodeOp *destop = findRelTarget(op,fallThruAddr);
+          if (destop != (PcodeOp *)0) {
+            data.opMarkStartBasic(destop);      // Make sure the target op is a basic block start
+            uintm newtime = destop->getTime();
+            if (newtime > maxtime)
+              maxtime = newtime;
+          }
+          else
+            isfallthru = true;          // Relative branch is to end of instruction
+        }
+        else
+          newAddress(op,destaddr); // Generate branch address
+        if (op->getTime() >= maxtime) {
+          deleteRemainingOps(oiter);
+          oiter = obank.endDead();
+        }
+        startbasic = true;
       }
       break;
     case CPUI_BRANCHIND:
-      tablelist.push_back(op);	// Put off trying to recover the table
+      tablelist.push_back(op);  // Put off trying to recover the table
       if (op->getTime() >= maxtime) {
-	deleteRemainingOps(oiter);
-	oiter = obank.endDead();
+        deleteRemainingOps(oiter);
+        oiter = obank.endDead();
       }
       startbasic = true;
       break;
     case CPUI_RETURN:
       if (op->getTime() >= maxtime) {
-	deleteRemainingOps(oiter);
-	oiter = obank.endDead();
+        deleteRemainingOps(oiter);
+        oiter = obank.endDead();
       }
       startbasic = true;
       break;
     case CPUI_CALL:
       if (setupCallSpecs(op,fc))
-	--oiter;		// Backup one op, to pickup halt
+        --oiter;                // Backup one op, to pickup halt
       break;
     case CPUI_CALLIND:
       if (setupCallindSpecs(op,fc))
-	--oiter;		// Backup one op, to pickup halt
+        --oiter;                // Backup one op, to pickup halt
       break;
     case CPUI_CALLOTHER:
     {
       if (glb->userops.getOp(op->getIn(0)->getOffset())->getType() == UserPcodeOp::injected)
-	injectlist.push_back(op);
+        injectlist.push_back(op);
       break;
     }
     default:
       break;
     }
   }
-  if (isfallthru)		// We have seen an explicit relative branch to end of instruction
-    startbasic = true;		// So we know next instruction starts a basicblock
-  else {			// If we haven't seen a relative branch, calculate fallthru by looking at last op
+  if (isfallthru)               // We have seen an explicit relative branch to end of instruction
+    startbasic = true;          // So we know next instruction starts a basicblock
+  else {                        // If we haven't seen a relative branch, calculate fallthru by looking at last op
     if (op == (PcodeOp *)0)
-      isfallthru = true;	// No ops at all, mean a fallthru
+      isfallthru = true;        // No ops at all, mean a fallthru
     else {
       switch(op->code()) {
       case CPUI_BRANCH:
       case CPUI_BRANCHIND:
       case CPUI_RETURN:
-	break;			// If the last instruction is a branch, then no fallthru
+        break;                  // If the last instruction is a branch, then no fallthru
       default:
-	isfallthru = true;	// otherwise it is a fallthru
-	break;
+        isfallthru = true;      // otherwise it is a fallthru
+        break;
       }
     }
   }
@@ -398,8 +402,8 @@ bool FlowInfo::processInstruction(const Address &curaddr,bool &startbasic)
       artificialHalt(curaddr,PcodeOp::badinstruction);
       data.warning("Too many instructions -- Truncating flow here",curaddr);
       if (!hasTooManyInstructions()) {
-	flags |= toomanyinstructions_present;
-	data.warningHeader("Exceeded maximum allowable instructions: Some flow is truncated");
+        flags |= toomanyinstructions_present;
+        data.warningHeader("Exceeded maximum allowable instructions: Some flow is truncated");
       }
     }
   }
@@ -420,50 +424,50 @@ bool FlowInfo::processInstruction(const Address &curaddr,bool &startbasic)
   try {
     step = glb->translate->oneInstruction(emitter,curaddr); // Generate ops for instruction
   }
-  catch(UnimplError &err) {	// Instruction is unimplemented
+  catch(UnimplError &err) {     // Instruction is unimplemented
     if ((flags & ignore_unimplemented)!=0) {
       step = err.instruction_length;
       if (!hasUnimplemented()) {
-	flags |= unimplemented_present;
-	data.warningHeader("Control flow ignored unimplemented instructions");
+        flags |= unimplemented_present;
+        data.warningHeader("Control flow ignored unimplemented instructions");
       }
     }
     else if ((flags & error_unimplemented)!=0)
-      throw err;		// rethrow
+      throw err;                // rethrow
     else {
       // Add infinite loop instruction
-      step = 1;			// Pretend size 1
+      step = 1;                 // Pretend size 1
       artificialHalt(curaddr,PcodeOp::unimplemented);
       data.warning("Unimplemented instruction - Truncating control flow here",curaddr);
       if (!hasUnimplemented()) {
-	flags |= unimplemented_present;
-	data.warningHeader("Control flow encountered unimplemented instructions");
+        flags |= unimplemented_present;
+        data.warningHeader("Control flow encountered unimplemented instructions");
       }
     }
   }
   catch(BadDataError &err) {
     if ((flags & error_unimplemented)!=0)
-      throw err;		// rethrow
+      throw err;                // rethrow
     else {
       // Add infinite loop instruction
-      step = 1;			// Pretend size 1
+      step = 1;                 // Pretend size 1
       artificialHalt(curaddr,PcodeOp::badinstruction);
       data.warning("Bad instruction - Truncating control flow here",curaddr);
       if (!hasBadData()) {
-	flags |= baddata_present;
-	data.warningHeader("Control flow encountered bad instruction data");
+        flags |= baddata_present;
+        data.warningHeader("Control flow encountered bad instruction data");
       }
     }
   }
   VisitStat &stat(visited[curaddr]); // Mark that we visited this instruction
-  stat.size = step;		// Record size of instruction
+  stat.size = step;             // Record size of instruction
 
-  if (curaddr < minaddr)	// Update minimum and maximum address
+  if (curaddr < minaddr)        // Update minimum and maximum address
     minaddr = curaddr;
-  if (maxaddr < curaddr+step)	// Keep track of biggest and smallest address
+  if (maxaddr < curaddr+step)   // Keep track of biggest and smallest address
     maxaddr = curaddr+step;
 
-  if (emptyflag)		// Make sure oiter points at first new op
+  if (emptyflag)                // Make sure oiter points at first new op
     oiter = obank.beginDead();
   else
     ++oiter;
@@ -494,18 +498,18 @@ bool FlowInfo::setFallthruBound(Address &bound)
 
   iter = visited.upper_bound(addr); // First range greater than addr
   if (iter!=visited.begin()) {
-    --iter;			// Last range less than or equal to us
+    --iter;                     // Last range less than or equal to us
     if (addr == (*iter).first) { // If we have already visited this address
       PcodeOp *op = target(addr); // But make sure the address
       data.opMarkStartBasic(op); // starts a basic block
-      addrlist.pop_back();	// Throw it away
+      addrlist.pop_back();      // Throw it away
       return false;
     }
     if (addr < (*iter).first + (*iter).second.size)
       reinterpreted(addr);
     ++iter;
   }
-  if (iter!=visited.end())	// Whats the maximum distance we can go
+  if (iter!=visited.end())      // Whats the maximum distance we can go
     bound = (*iter).first;
   else
     bound = eaddr;
@@ -530,8 +534,8 @@ void FlowInfo::handleOutOfBounds(const Address &fromaddr,const Address &toaddr)
     if ((flags&error_outofbounds)==0) {
       data.warning(errmsg.str(),toaddr);
       if (!hasOutOfBounds()) {
-	flags |= outofbounds_present;
-	data.warningHeader("Function flows out of bounds");
+        flags |= outofbounds_present;
+        data.warningHeader("Function flows out of bounds");
       }
     }
     else
@@ -561,18 +565,18 @@ void FlowInfo::fallthru(void)
     if (addrlist.empty()) break;
     if (bound <= addrlist.back()) {
       if (bound == eaddr) {
-	handleOutOfBounds(eaddr,addrlist.back());
-	unprocessed.push_back(addrlist.back());
-	addrlist.pop_back();
-	return;
+        handleOutOfBounds(eaddr,addrlist.back());
+        unprocessed.push_back(addrlist.back());
+        addrlist.pop_back();
+        return;
       }
       if (bound == addrlist.back()) { // Hit the bound exactly
-	if (startbasic) {
-	  PcodeOp *op = target(addrlist.back());
-	  data.opMarkStartBasic(op);
-	}
-	addrlist.pop_back();
-	break;
+        if (startbasic) {
+          PcodeOp *op = target(addrlist.back());
+          data.opMarkStartBasic(op);
+        }
+        addrlist.pop_back();
+        break;
       }
       if (!setFallthruBound(bound)) return; // Reset bound
     }
@@ -660,12 +664,12 @@ void FlowInfo::queryCall(FuncCallSpecs &fspecs)
     Funcdata *otherfunc = data.getScopeLocal()->getParent()->queryFunction( fspecs.getEntryAddress() );
     if (otherfunc != (Funcdata *)0) {
       fspecs.setFuncdata(otherfunc); // Associate the symbol with the callsite
-      if (!fspecs.hasModel() || otherfunc->getFuncProto().isInline()) {	// If the prototype was not overridden
-	fspecs.copyFlowEffects(otherfunc->getFuncProto());	// Take the flow affects of the symbol
-	// If the call site is applying just the standard prototype from the symbol,
-	// this postpones the full copy of the prototype until ActionDefaultParams
-	// Which lets "last second" changes come in, between when the function is first walked and
-	// when it is finally decompiled
+      if (!fspecs.hasModel() || otherfunc->getFuncProto().isInline()) { // If the prototype was not overridden
+        fspecs.copyFlowEffects(otherfunc->getFuncProto());      // Take the flow affects of the symbol
+        // If the call site is applying just the standard prototype from the symbol,
+        // this postpones the full copy of the prototype until ActionDefaultParams
+        // Which lets "last second" changes come in, between when the function is first walked and
+        // when it is finally decompiled
       }
     }
   }
@@ -687,9 +691,9 @@ bool FlowInfo::setupCallSpecs(PcodeOp *op,FuncCallSpecs *fc)
 
   data.getOverride().applyPrototype(data,*res);
   queryCall(*res);
-  if (fc != (FuncCallSpecs *)0) {	// If we are already in the midst of an injection
+  if (fc != (FuncCallSpecs *)0) {       // If we are already in the midst of an injection
     if (fc->getEntryAddress() == res->getEntryAddress())
-      res->cancelInjectId();		// Don't allow recursion
+      res->cancelInjectId();            // Don't allow recursion
   }
   return checkForFlowModification(*res);
 }
@@ -714,7 +718,7 @@ bool FlowInfo::setupCallindSpecs(PcodeOp *op,FuncCallSpecs *fc)
   data.getOverride().applyPrototype(data,*res);
   queryCall(*res);
 
-  if (!res->getEntryAddress().isInvalid()) {	// If we are overridden to a direct call
+  if (!res->getEntryAddress().isInvalid()) {    // If we are overridden to a direct call
     // Change indirect pcode call into a normal pcode call
     data.opSetOpcode(op,CPUI_CALL); // Set normal opcode
     data.opSetInput(op,data.newVarnodeCallSpecs(res),0);
@@ -728,7 +732,7 @@ void FlowInfo::truncateIndirectJump(PcodeOp *op,JumpTable::RecoveryMode mode)
 
 {
   if (mode == JumpTable::fail_return) {
-    data.opSetOpcode(op,CPUI_RETURN);	// Turn jump into return
+    data.opSetOpcode(op,CPUI_RETURN);   // Turn jump into return
     data.warning("Treating indirect jump as return",op->getAddr());
   }
   else {
@@ -751,14 +755,14 @@ void FlowInfo::truncateIndirectJump(PcodeOp *op,JumpTable::RecoveryMode mode)
     else {
       returnType = 0;
       noParams = false;
-      fc->setBadJumpTable(true);		// Consider using special name for switch variable
+      fc->setBadJumpTable(true);                // Consider using special name for switch variable
       data.warning("Treating indirect jump as call",op->getAddr());
     }
     if (noParams) {
       if (!fc->hasModel()) {
-	fc->setInternal(glb->defaultfp, glb->types->getTypeVoid());
-	fc->setInputLock(true);
-	fc->setOutputLock(true);
+        fc->setInternal(glb->defaultfp, glb->types->getTypeVoid());
+        fc->setInputLock(true);
+        fc->setOutputLock(true);
       }
     }
 
@@ -771,38 +775,38 @@ void FlowInfo::truncateIndirectJump(PcodeOp *op,JumpTable::RecoveryMode mode)
 void FlowInfo::generateOps(void)
 
 {
-  vector<PcodeOp *> notreached;	// indirect ops that are not reachable
+  vector<PcodeOp *> notreached; // indirect ops that are not reachable
   clearProperties();
   addrlist.push_back(data.getAddress());
-  while(!addrlist.empty())	// Recovering as much as possible except jumptables
+  while(!addrlist.empty())      // Recovering as much as possible except jumptables
     fallthru();
   if (hasInject())
     injectPcode();
   do {
-    while(!tablelist.empty()) {	// For each jumptable found
+    while(!tablelist.empty()) { // For each jumptable found
       vector<JumpTable *> newTables;
       recoverJumpTables(newTables, notreached);
       tablelist.clear();
       for(int4 i=0;i<newTables.size();++i) {
-	JumpTable *jt = newTables[i];
-	if (jt == (JumpTable *)0) continue;
+        JumpTable *jt = newTables[i];
+        if (jt == (JumpTable *)0) continue;
 
-	int4 num = jt->numEntries();
-	for(int4 i=0;i<num;++i)
-	  newAddress(jt->getIndirectOp(),jt->getAddressByIndex(i));
-	while(!addrlist.empty())	// Try to fill in as much more as possible
-	  fallthru();
+        int4 num = jt->numEntries();
+        for(int4 i=0;i<num;++i)
+          newAddress(jt->getIndirectOp(),jt->getAddressByIndex(i));
+        while(!addrlist.empty())        // Try to fill in as much more as possible
+          fallthru();
       }
     }
     
-    checkContainedCall();	// Check for PIC constructions
+    checkContainedCall();       // Check for PIC constructions
     checkMultistageJumptables();
     for(int4 i=0;i<notreached.size();++i)
       tablelist.push_back(notreached[i]);
     notreached.clear();
     if (hasInject())
       injectPcode();
-  } while(!tablelist.empty());	// Inlining or multistage may have added new indirect branches
+  } while(!tablelist.empty());  // Inlining or multistage may have added new indirect branches
 }
 
 void FlowInfo::generateBlocks(void)
@@ -810,8 +814,8 @@ void FlowInfo::generateBlocks(void)
 {
   fillinBranchStubs();
   collectEdges();
-  splitBasic();		// Split ops up into basic blocks
-  connectBasic();		// Generate edges between basic blocks
+  splitBasic();         // Split ops up into basic blocks
+  connectBasic();               // Generate edges between basic blocks
   if (bblocks.getSize()!=0) {
     FlowBlock *startblock = bblocks.getBlock(0);
     if (startblock->sizeIn() != 0) { // Make sure the entry block has no incoming edges
@@ -910,33 +914,34 @@ void FlowInfo::collectEdges(void)
     switch(op->code()) {
     case CPUI_BRANCH:
       targ_op = branchTarget(op);
-      block_edge1.push_back(op);
-      //      block_edge2.push_back(op->Input(0)->getAddr().Iop());
-      block_edge2.push_back(targ_op);
+      if (targ_op != (PcodeOp *)0) {   // nullptr means out-of-bounds target
+        block_edge1.push_back(op);
+        block_edge2.push_back(targ_op);
+      }
       break;
     case CPUI_BRANCHIND:
       jt = data.findJumpTable(op);
       if (jt == (JumpTable *)0) break;
-				// If we are in this routine and there is no table
-				// Then we must be doing partial flow analysis
-				// so assume there are no branches out
+                                // If we are in this routine and there is no table
+                                // Then we must be doing partial flow analysis
+                                // so assume there are no branches out
       num = jt->numEntries();
       for(i=0;i<num;++i) {
-	targ_op = target(jt->getAddressByIndex(i));
-	if (targ_op->isMark()) continue; // Already a link between these blocks
-	targ_op->setMark();
-	block_edge1.push_back(op);
-	block_edge2.push_back(targ_op);
+        targ_op = target(jt->getAddressByIndex(i));
+        if (targ_op->isMark()) continue; // Already a link between these blocks
+        targ_op->setMark();
+        block_edge1.push_back(op);
+        block_edge2.push_back(targ_op);
       }
       iter1 = block_edge1.end(); // Clean up our marks
       iter2 = block_edge2.end();
       while(iter1 != block_edge1.begin()) {
-	--iter1;
-	--iter2;
-	if ((*iter1)==op)
-	  (*iter2)->clearMark();
-	else
-	  break;
+        --iter1;
+        --iter2;
+        if ((*iter1)==op)
+          (*iter2)->clearMark();
+        else
+          break;
       }
       break;
     case CPUI_RETURN:
@@ -946,14 +951,16 @@ void FlowInfo::collectEdges(void)
       block_edge1.push_back(op);
       block_edge2.push_back(targ_op);
       targ_op = branchTarget(op);
-      block_edge1.push_back(op);
-      block_edge2.push_back(targ_op);
+      if (targ_op != (PcodeOp *)0) {   // nullptr means out-of-bounds target
+        block_edge1.push_back(op);
+        block_edge2.push_back(targ_op);
+      }
       break;
     default:
-      if (nextstart) {		// Put in fallthru edge if new basic block
-	targ_op = fallthruOp(op);
-	block_edge1.push_back(op);
-	block_edge2.push_back(targ_op);
+      if (nextstart) {          // Put in fallthru edge if new basic block
+        targ_op = fallthruOp(op);
+        block_edge1.push_back(op);
+        block_edge2.push_back(targ_op);
       }
       break;
     }
@@ -993,7 +1000,7 @@ void FlowInfo::splitBasic(void)
     else {
       const Address &nextAddr( op->getAddr() );
       if (stop < nextAddr)
-	stop = nextAddr;
+        stop = nextAddr;
     }
     data.opInsert(op,cur,cur->endOp());
   }
@@ -1075,9 +1082,9 @@ void FlowInfo::inlineClone(const FlowInfo &inlineflow,const Address &retaddr)
   }
   // Copy in the cross-referencing
   unprocessed.insert(unprocessed.end(),inlineflow.unprocessed.begin(),
-		     inlineflow.unprocessed.end());
+                     inlineflow.unprocessed.end());
   addrlist.insert(addrlist.end(),inlineflow.addrlist.begin(),
-		  inlineflow.addrlist.end());
+                  inlineflow.addrlist.end());
   visited.insert(inlineflow.visited.begin(),inlineflow.visited.end());
   // We don't copy inline_recursion or inline_head here
 }
@@ -1163,21 +1170,21 @@ void FlowInfo::doInjection(InjectPayload *payload,InjectContext &icontext,PcodeO
 {
   // Create marker at current end of the deadlist
   list<PcodeOp *>::const_iterator iter = obank.endDead();
-  --iter;			// There must be at least one op
+  --iter;                       // There must be at least one op
 
-  payload->inject(icontext,emitter);		// Do the injection
+  payload->inject(icontext,emitter);            // Do the injection
 
   bool startbasic = op->isBlockStart();
-  ++iter;			// Now points to first op in the injection
+  ++iter;                       // Now points to first op in the injection
   if (iter == obank.endDead())
     throw LowlevelError("Empty injection: " + payload->getName());
   PcodeOp *firstop = *iter;
   bool isfallthru = true;
   PcodeOp *lastop = xrefControlFlow(iter,startbasic,isfallthru,fc);
 
-  if (startbasic) {		// If the inject code does NOT fall thru
+  if (startbasic) {             // If the inject code does NOT fall thru
     iter = op->getInsertIter();
-    ++iter;			// Mark next op after the call
+    ++iter;                     // Mark next op after the call
     if (iter != obank.endDead())
       data.opMarkStartBasic(*iter); // as start of basic block
   }
@@ -1186,7 +1193,7 @@ void FlowInfo::doInjection(InjectPayload *payload,InjectContext &icontext,PcodeO
     obank.markIncidentalCopy(firstop, lastop);
   obank.moveSequenceDead(firstop,lastop,op); // Move the injection to right after the call
 
-  updateTarget(op,firstop);		// Replace -op- with -firstop- in the target map
+  updateTarget(op,firstop);             // Replace -op- with -firstop- in the target map
   // Get rid of the original call
   data.opDestroyRaw(op);
 }
@@ -1202,7 +1209,7 @@ void FlowInfo::injectUserOp(PcodeOp *op)
   icontext.clear();
   icontext.baseaddr = op->getAddr();
   icontext.nextaddr = icontext.baseaddr;
-  for(int4 i=1;i<op->numInput();++i) {		// Skip the first operand containing the injectid
+  for(int4 i=1;i<op->numInput();++i) {          // Skip the first operand containing the injectid
     Varnode *vn = op->getIn(i);
     icontext.inputlist.emplace_back();
     icontext.inputlist.back().space = vn->getSpace();
@@ -1231,7 +1238,7 @@ bool FlowInfo::inlineSubFunction(FuncCallSpecs *fc)
 
   if (inline_head == (Funcdata *)0) {
     // This is the top level of inlining
-    inline_head = &data;	// Set up head of inlining
+    inline_head = &data;        // Set up head of inlining
     inline_recursion = &inline_base;
   }
   inline_recursion->insert(data.getAddress()); // Insert current function
@@ -1244,11 +1251,11 @@ bool FlowInfo::inlineSubFunction(FuncCallSpecs *fc)
   int4 res = data.inlineFlow( fd, *this, fc->getOp());
   if (res < 0)
     return false;
-  else if (res == 0) {	// easy model
+  else if (res == 0) {  // easy model
     // Remove inlined function from list so it can be inlined again, even if it also inlines
     inline_recursion->erase(fd->getAddress());
   }
-  else if (res == 1) {	// hard model
+  else if (res == 1) {  // hard model
     // Add inlined function to recursion list, even if it contains no inlined calls,
     // to prevent parent from inlining it twice
     inline_recursion->insert(fd->getAddress());
@@ -1283,7 +1290,7 @@ bool FlowInfo::injectSubFunction(FuncCallSpecs *fc)
   if (payload->getParamShift() != 0)
     qlst.back()->setParamshift(payload->getParamShift());
 
-  return true;			// Return true to indicate injection happened and callspec should be deleted
+  return true;                  // Return true to indicate injection happened and callspec should be deleted
 }
 
 /// \param fc is the given call site (which is freed by this method)
@@ -1314,24 +1321,24 @@ void FlowInfo::injectPcode(void)
   for(int4 i=0;i<injectlist.size();++i) {
     PcodeOp *op = injectlist[i];
     if (op == (PcodeOp *)0) continue;
-    injectlist[i] = (PcodeOp *)0;	// Nullify entry, so we don't inject more than once
+    injectlist[i] = (PcodeOp *)0;       // Nullify entry, so we don't inject more than once
     if (op->code() == CPUI_CALLOTHER) {
       injectUserOp(op);
     }
-    else {	// CPUI_CALL or CPUI_CALLIND
+    else {      // CPUI_CALL or CPUI_CALLIND
       FuncCallSpecs *fc = FuncCallSpecs::getFspecFromConst(op->getIn(0)->getAddr());
       if (fc->isInline()) {
-	if (fc->getInjectId() >= 0) {
-	  if (injectSubFunction(fc)) {
-	    data.warningHeader("Function: "+fc->getName()+" replaced with injection: "+
-			       glb->pcodeinjectlib->getCallFixupName(fc->getInjectId()));
-	    deleteCallSpec(fc);
-	  }
-	}
-	else if (inlineSubFunction(fc)) {
-	  data.warningHeader("Inlined function: "+fc->getName());
-	  deleteCallSpec(fc);
-	}
+        if (fc->getInjectId() >= 0) {
+          if (injectSubFunction(fc)) {
+            data.warningHeader("Function: "+fc->getName()+" replaced with injection: "+
+                               glb->pcodeinjectlib->getCallFixupName(fc->getInjectId()));
+            deleteCallSpec(fc);
+          }
+        }
+        else if (inlineSubFunction(fc)) {
+          data.warningHeader("Inlined function: "+fc->getName());
+          deleteCallSpec(fc);
+        }
       }
     }
   }
@@ -1374,10 +1381,10 @@ void FlowInfo::checkContainedCall(void)
       list<PcodeOp *>::const_iterator oiter = op->getInsertIter();
       ++oiter;
       if (oiter != obank.endDead())
-	data.opMarkStartBasic(*oiter);
+        data.opMarkStartBasic(*oiter);
       // Restore original address
       data.opSetInput(op,data.newCodeRef(addr),0);
-      iter = qlst.erase(iter);	// Delete the call
+      iter = qlst.erase(iter);  // Delete the call
       delete fc;
       if (iter == qlst.end()) break;
     }
@@ -1425,17 +1432,17 @@ void FlowInfo::recoverJumpTables(vector<JumpTable *> &newTables,vector<PcodeOp *
     JumpTable::RecoveryMode mode;
     JumpTable *jt = data.recoverJumpTable(partial,op,this,mode); // Recover it
     if (jt == (JumpTable *)0) { // Could not recover jumptable
-      if (!isFlowForInline())	// Unless this flow is being inlined for something else
-	truncateIndirectJump(op,mode); // Treat the indirect jump as a call
+      if (!isFlowForInline())   // Unless this flow is being inlined for something else
+        truncateIndirectJump(op,mode); // Treat the indirect jump as a call
     }
     else if (jt->isPartial()) {
       if (tablelist.size() > 1 && jt->getRecoverCount() <= 1) {
-	// If the recovery is incomplete with current flow AND there is more flow to generate,
-	//     AND we haven't tried to recover this table before
-	notreached.push_back(op); // Save this op so we can try to recover the table again later
+        // If the recovery is incomplete with current flow AND there is more flow to generate,
+        //     AND we haven't tried to recover this table before
+        notreached.push_back(op); // Save this op so we can try to recover the table again later
       }
       else
-	jt->markComplete();	// If we aren't revisiting, mark the table as complete
+        jt->markComplete();     // If we aren't revisiting, mark the table as complete
     }
     newTables.push_back(jt);
   }
