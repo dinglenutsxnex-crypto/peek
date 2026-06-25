@@ -340,6 +340,25 @@ int64_t AnalysisDb::get_instruction_count(int64_t function_id) {
     return cnt;
 }
 
+uint64_t AnalysisDb::get_code_end_address(int64_t function_id) {
+    sqlite3_stmt* stmt = nullptr;
+    // MAX(address + size) gives the first byte past the last decoded instruction.
+    // Cast to avoid sign issues — all addresses are stored as signed int64 but
+    // represent unsigned 64-bit VAs.
+    const char* sql =
+        "SELECT CAST(MAX(CAST(address AS INTEGER) + CAST(size AS INTEGER)) AS INTEGER)"
+        " FROM instructions WHERE function_id=?";
+    sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr);
+    sqlite3_bind_int64(stmt, 1, function_id);
+    uint64_t end = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW &&
+        sqlite3_column_type(stmt, 0) != SQLITE_NULL) {
+        end = (uint64_t)sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return end;
+}
+
 std::string AnalysisDb::get_pseudocode(int64_t func_id) {
     sqlite3_stmt* stmt = nullptr;
     const char* sql = "SELECT pseudocode FROM functions WHERE id=? LIMIT 1";

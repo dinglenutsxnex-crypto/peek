@@ -90,6 +90,11 @@ public:
                                                uint64_t address);
     int64_t                    get_instruction_count(int64_t function_id);
 
+    // Returns MAX(address+size) over all Capstone-decoded instructions for
+    // the function, i.e. the first byte past the last real instruction.
+    // Returns 0 if the function has no instructions in the DB.
+    uint64_t                   get_code_end_address(int64_t function_id);
+
     // Pseudocode cache — empty string means not yet decompiled.
     std::string get_pseudocode(int64_t func_id);
     bool        store_pseudocode(int64_t func_id, const std::string& code);

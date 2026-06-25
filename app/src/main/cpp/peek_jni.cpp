@@ -674,10 +674,29 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         return env->NewStringUTF("");
     }
 
-    const uint8_t* data = va_to_ptr(elf, fn.address, fn.size);
+    // Use the Capstone-derived code end address so that Ghidra's followFlow
+    // receives a tight [baddr, eaddr] that excludes any trailing literal pool
+    // bytes.  fn.size is estimated as distance-to-next-function and often
+    // includes non-instruction data at the end; those bytes would make
+    // followFlow throw "Could not find op at target address" when a branch
+    // lands in the data.  If the DB has no instructions for this function
+    // (shouldn't happen, but be safe), fall back to fn.size.
+    uint64_t code_end = ctx->db->get_code_end_address((int64_t)func_id);
+    uint64_t code_len = (code_end > fn.address)
+                            ? (code_end - fn.address)
+                            : fn.size;
+    // Never exceed the ELF-declared function size.
+    if (code_len > fn.size) code_len = fn.size;
+    LOGI("Decompiling %s addr=0x%llx fn.size=%llu code_len=%llu",
+         fn.name.c_str(),
+         (unsigned long long)fn.address,
+         (unsigned long long)fn.size,
+         (unsigned long long)code_len);
+
+    const uint8_t* data = va_to_ptr(elf, fn.address, code_len);
     if (!data) {
-        LOGE("va_to_ptr failed addr=0x%llx size=%llu",
-             (unsigned long long)fn.address, (unsigned long long)fn.size);
+        LOGE("va_to_ptr failed addr=0x%llx code_len=%llu",
+             (unsigned long long)fn.address, (unsigned long long)code_len);
         return env->NewStringUTF("");
     }
 
@@ -687,7 +706,7 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     std::string tmp_path = tmp_ss.str();
 
     char* result_cstr = peek_decompile_bytes(
-        data, (size_t)fn.size, fn.name.c_str(), tmp_path.c_str(),
+        data, (size_t)code_len, fn.name.c_str(), tmp_path.c_str(),
         (uint64_t)fn.address);
 
     if (!result_cstr) {
