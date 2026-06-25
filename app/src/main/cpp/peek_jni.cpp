@@ -89,51 +89,95 @@ static const uint8_t* va_to_ptr(const ElfParseResult& elf,
 // ELF string + data-reference resolution helpers
 // ---------------------------------------------------------------------------
 
-// Try to read a null-terminated printable ASCII string at the given virtual
-// address from ANY mapped section (including .rodata, not just .text).
-// Returns empty string if the address is not mapped, the first byte is not
-// printable ASCII, or the string exceeds max_len without a terminator.
+// Read an 8-byte little-endian value from a virtual address in the ELF.
+// Returns 0 and sets ok=false if the VA is not mapped or OOB.
+static uint64_t elf_read_u64le(const ElfParseResult& elf, uint64_t va, bool& ok) {
+    for (const auto& sec : elf.sections) {
+        if (sec.size < 8) continue;
+        if (va < sec.address || va + 8 > sec.address + sec.size) continue;
+        uint64_t file_off = sec.offset + (va - sec.address);
+        if (file_off + 8 > elf.data.size()) continue;
+        const uint8_t* b = elf.data.data() + file_off;
+        ok = true;
+        return  (uint64_t)b[0]        | ((uint64_t)b[1] << 8)  |
+                ((uint64_t)b[2] << 16) | ((uint64_t)b[3] << 24) |
+                ((uint64_t)b[4] << 32) | ((uint64_t)b[5] << 40) |
+                ((uint64_t)b[6] << 48) | ((uint64_t)b[7] << 56);
+    }
+    ok = false;
+    return 0;
+}
+
+// Read a null-terminated printable ASCII string from ANY mapped ELF section.
+//
+// Many Ghidra xRam<addr> tokens point into a pointer table (.data/.rodata)
+// rather than directly to a string — the 8 bytes at that address are a
+// pointer to the actual string.  We therefore try:
+//   1. Direct: read string bytes at va.
+//   2. Deref:  read 8-byte LE pointer at va, then read string there.
+// The longer / more valid result wins.  Returns "" if nothing is found.
 static std::string elf_read_cstring(const ElfParseResult& elf,
                                      uint64_t va,
                                      size_t max_len = 512) {
-    for (const auto& sec : elf.sections) {
-        if (sec.size == 0) continue;
-        if (va < sec.address || va >= sec.address + sec.size) continue;
-        uint64_t file_off = sec.offset + (va - sec.address);
-        if (file_off >= elf.data.size()) continue;
-        std::string s;
-        for (size_t i = 0; i < max_len; ++i) {
-            if (file_off + i >= elf.data.size()) break;
-            uint8_t b = elf.data[file_off + i];
-            if (b == 0) return s;                // null terminator — done
-            if (b < 0x20 || b > 0x7e) return ""; // non-printable — not a string
-            s += static_cast<char>(b);
+    auto try_at = [&](uint64_t addr) -> std::string {
+        for (const auto& sec : elf.sections) {
+            if (sec.size == 0) continue;
+            if (addr < sec.address || addr >= sec.address + sec.size) continue;
+            uint64_t file_off = sec.offset + (addr - sec.address);
+            if (file_off >= elf.data.size()) continue;
+            std::string s;
+            for (size_t i = 0; i < max_len; ++i) {
+                if (file_off + i >= elf.data.size()) break;
+                uint8_t b = elf.data[file_off + i];
+                if (b == 0) return s;
+                // Allow printable ASCII + common escapes (\t \n)
+                if (b == '\t' || b == '\n') { s += b; continue; }
+                if (b < 0x20 || b > 0x7e) return "";
+                s += static_cast<char>(b);
+            }
+            return "";
         }
-        return ""; // exceeded max_len without terminator
-    }
-    return ""; // VA not in any section
+        return "";
+    };
+
+    std::string direct = try_at(va);
+
+    // Heuristic: if direct is short (<4 chars) it may be pointer bytes mis-read as text.
+    // Try dereferencing.
+    bool ok = false;
+    uint64_t ptr = elf_read_u64le(elf, va, ok);
+    std::string deref;
+    if (ok && ptr != 0 && ptr != va)
+        deref = try_at(ptr);
+
+    // Prefer the longer, more printable result.
+    return (deref.size() > direct.size()) ? deref : direct;
 }
 
-// Escape a raw string for embedding inside a C comment (no */ allowed).
-static std::string escape_for_comment(const std::string& s) {
+// Escape a C string literal for embedding in quotes in pseudocode.
+// Handles backslash and double-quote; strips embedded newlines/tabs.
+static std::string escape_for_literal(const std::string& s) {
     std::string out;
-    out.reserve(s.size());
-    for (char c : s) {
-        if (c == '*' || c == '/') { out += '\\'; out += c; }
-        else out += c;
+    out.reserve(s.size() + 4);
+    for (unsigned char c : s) {
+        if (c == '"')  { out += "\\\""; }
+        else if (c == '\\') { out += "\\\\"; }
+        else if (c == '\n') { out += "\\n"; }
+        else if (c == '\t') { out += "\\t"; }
+        else out += static_cast<char>(c);
     }
     return out;
 }
 
-// Known JNI functions whose N-th argument (0-based, after env) is a C-string
-// VA that Ghidra shows as a hex literal.  We try to resolve and annotate it.
-struct StringArgSpec { const char* func; int arg_after_env; }; // 0 = first after env
+// JNI functions whose N-th argument (0-based, after env) is a C-string VA
+// that Ghidra emits as a hex literal.  arg_after_env=0 means first real arg.
+struct StringArgSpec { const char* func; int arg_after_env; };
 static const StringArgSpec kStringArgFuncs[] = {
     {"FindClass",         0},
     {"DefineClass",       0},
     {"ThrowNew",          1},
     {"GetMethodID",       1},  // name
-    {"GetMethodID",       2},  // sig  — handled by the loop below
+    {"GetMethodID",       2},  // sig
     {"GetStaticMethodID", 1},
     {"GetStaticMethodID", 2},
     {"GetFieldID",        1},
@@ -143,28 +187,28 @@ static const StringArgSpec kStringArgFuncs[] = {
     {"NewStringUTF",      0},
 };
 
-// Annotate Ghidra data references and known JNI string arguments in-place.
+// Resolve Ghidra data references and JNI string arguments INLINE.
 //
-// Pass 1 — xRam<hex16>:  Ghidra emits these for data VAs it couldn't
-//   resolve.  We look them up in the ELF and, if printable, append a
-//   /* "string" */ comment.
+// Pass 1 — xRam<hex16>: replaces the entire token with "string" if the
+//   address resolves to printable ASCII.  If not resolvable, keeps the
+//   original token unchanged so the user can still see the address.
 //
-// Pass 2 — JNI string args: after vtable calls have been resolved,
-//   patterns like  ->FindClass(env, 0xABCD)  are scanned; if 0xABCD is
-//   a string VA we add an inline comment.
+// Pass 2 — JNI string args: after vtable resolution, patterns like
+//   ->FindClass(env, 0x470e) are found; if the hex resolves to a string
+//   the literal 0x... is replaced with "string" inline.
 static std::string resolve_data_refs(const std::string& code,
                                       const ElfParseResult& elf) {
-    // ---- Pass 1: xRam<16-digit-hex> -------------------------------------
+    // ---- Pass 1: xRam<16-digit-hex> → "string" --------------------------
     std::string out;
-    out.reserve(code.size() + 512);
+    out.reserve(code.size());
     {
-        const char  XPFX[]    = "xRam";
-        const size_t XPFX_LEN = 4;
+        const char   XPFX[]    = "xRam";
+        const size_t XPFX_LEN  = 4;
         size_t pos = 0;
         while (pos < code.size()) {
             size_t f = code.find(XPFX, pos);
             if (f == std::string::npos) { out.append(code, pos, std::string::npos); break; }
-            // Word boundary check before "xRam"
+            // Word boundary before "xRam"
             if (f > 0 && (std::isalnum((unsigned char)code[f-1]) || code[f-1]=='_')) {
                 out.append(code, pos, f - pos + 1);
                 pos = f + 1;
@@ -173,104 +217,89 @@ static std::string resolve_data_refs(const std::string& code,
             size_t p = f + XPFX_LEN;
             size_t hex_start = p;
             while (p < code.size() && std::isxdigit((unsigned char)code[p])) ++p;
-            if (p - hex_start != 16) { // must be exactly 16 hex digits
+            if (p - hex_start != 16) {
                 out.append(code, pos, f - pos + 1);
                 pos = f + 1;
                 continue;
             }
             uint64_t va = std::strtoull(
                 std::string(code, hex_start, 16).c_str(), nullptr, 16);
-            out.append(code, pos, p - pos); // keep original xRam token
             std::string s = elf_read_cstring(elf, va);
-            if (!s.empty())
-                out += " /* \"" + escape_for_comment(s) + "\" */";
+            if (!s.empty()) {
+                // Inline replace: drop the xRam token, emit "string"
+                out.append(code, pos, f - pos); // text before xRam
+                out += '"';
+                out += escape_for_literal(s);
+                out += '"';
+            } else {
+                out.append(code, pos, p - pos); // keep xRam token as-is
+            }
             pos = p;
         }
     }
 
-    // ---- Pass 2: JNI string arguments ------------------------------------
-    // Pattern: -><FuncName>(<env_var>, ..., 0x<hex>, ...)
-    // We skip scanning unless the ELF has some data to resolve.
+    // ---- Pass 2: JNI string args 0x<hex> → "string" ---------------------
     std::string out2;
     out2.reserve(out.size());
     {
         size_t pos = 0;
         while (pos < out.size()) {
-            // Find a "->" that precedes a known string-arg JNI function.
             size_t arrow = out.find("->", pos);
             if (arrow == std::string::npos) {
                 out2.append(out, pos, std::string::npos);
                 break;
             }
 
-            // Read the function name after "->"
             size_t fn_start = arrow + 2;
             size_t fn_end   = fn_start;
-            while (fn_end < out.size() && (std::isalnum((unsigned char)out[fn_end]) || out[fn_end]=='_'))
+            while (fn_end < out.size() &&
+                   (std::isalnum((unsigned char)out[fn_end]) || out[fn_end]=='_'))
                 ++fn_end;
             std::string callee(out, fn_start, fn_end - fn_start);
 
-            // Check if it's a known string-arg function
-            const StringArgSpec* spec = nullptr;
-            // Collect all specs for this callee (there may be multiple for
-            // different arg positions, e.g. GetMethodID name & sig).
-            // We'll build a list of arg indices to resolve.
             int resolve_args[4]; int resolve_n = 0;
-            for (const auto& sas : kStringArgFuncs) {
+            for (const auto& sas : kStringArgFuncs)
                 if (callee == sas.func && resolve_n < 4)
                     resolve_args[resolve_n++] = sas.arg_after_env;
-            }
 
             if (resolve_n == 0 || fn_end >= out.size() || out[fn_end] != '(') {
-                // Not a string-arg function or no '(' — copy up to and including '->'
                 out2.append(out, pos, arrow - pos + 2);
                 pos = arrow + 2;
                 continue;
             }
 
-            // Copy everything up to and including the opening '(' of the call
-            out2.append(out, pos, fn_end - pos + 1);
-            size_t call_pos = fn_end + 1; // first char inside '('
-
-            // Walk arguments, annotating hex literals at the target positions.
-            // We track: arg_index (after env = arg 0 is the first arg; arg after env
-            // starts at arg_after_env relative to arg 1, i.e. skip arg 0 = env var).
-            // Actual arg index inside the call (0 = env/this, 1 = first real, ...).
-            int  arg_idx    = 0;
+            out2.append(out, pos, fn_end - pos + 1); // up to '('
+            int  arg_idx     = 0;
             int  paren_depth = 1;
-            size_t p = call_pos;
+            size_t p = fn_end + 1;
 
             while (p < out.size() && paren_depth > 0) {
                 char c = out[p];
                 if (c == '(') { ++paren_depth; out2 += c; ++p; continue; }
-                if (c == ')') {
-                    --paren_depth;
-                    out2 += c; ++p;
-                    continue;
-                }
-                if (c == ',' && paren_depth == 1) {
-                    ++arg_idx;
-                    out2 += c; ++p;
-                    continue;
-                }
-                // Check if this arg position needs string resolution
+                if (c == ')') { --paren_depth; out2 += c; ++p; continue; }
+                if (c == ',' && paren_depth == 1) { ++arg_idx; out2 += c; ++p; continue; }
+
                 bool should_resolve = false;
                 for (int i = 0; i < resolve_n; ++i)
-                    if (arg_idx == resolve_args[i] + 1) // +1: skip env arg (arg 0)
+                    if (arg_idx == resolve_args[i] + 1)
                         should_resolve = true;
 
                 if (should_resolve && p + 1 < out.size() &&
                     out[p] == '0' && (out[p+1] == 'x' || out[p+1] == 'X')) {
-                    // Hex literal — read it
                     size_t hex_start = p + 2;
                     size_t q = hex_start;
                     while (q < out.size() && std::isxdigit((unsigned char)out[q])) ++q;
-                    out2.append(out, p, q - p); // copy "0x..."
                     uint64_t va = std::strtoull(
                         std::string(out, hex_start, q - hex_start).c_str(), nullptr, 16);
                     std::string s = elf_read_cstring(elf, va);
-                    if (!s.empty())
-                        out2 += " /* \"" + escape_for_comment(s) + "\" */";
+                    if (!s.empty()) {
+                        // Inline replace: drop 0x..., emit "string"
+                        out2 += '"';
+                        out2 += escape_for_literal(s);
+                        out2 += '"';
+                    } else {
+                        out2.append(out, p, q - p); // keep original hex
+                    }
                     p = q;
                 } else {
                     out2 += c; ++p;

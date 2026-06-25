@@ -3,6 +3,7 @@
 #include <cctype>
 #include <cstdlib>   // strtoull
 #include <cstring>   // strlen
+#include <map>
 #include <sstream>
 #include <vector>
 
@@ -500,6 +501,184 @@ static std::string replace_jni_constants(const std::string& src) {
 }
 
 // ---------------------------------------------------------------------------
+// Local variable type inference
+//
+// After vtable resolution, lines like:
+//   iVar4 = (*piStack_48)->FindClass(piStack_48, "com/Foo");
+// let us infer that iVar4 is jclass. We scan the body for these patterns,
+// build a {var → jni_type} map, and fix up the Ghidra-generated declaration
+// lines at the top of the function (e.g. "int8 iVar4;" → "jclass iVar4;").
+//
+// Special case: (*vm)->GetEnv(vm, &piStack_48, ...) fills piStack_48 as
+// JNIEnv*, so we retype its declaration as "JNIEnv *piStack_48;".
+// ---------------------------------------------------------------------------
+
+struct JniReturnType { const char* func; const char* ret_type; };
+static const JniReturnType kJniReturnTypes[] = {
+    {"FindClass",           "jclass"},
+    {"GetObjectClass",      "jclass"},
+    {"GetSuperclass",       "jclass"},
+    {"GetMethodID",         "jmethodID"},
+    {"GetStaticMethodID",   "jmethodID"},
+    {"GetFieldID",          "jfieldID"},
+    {"GetStaticFieldID",    "jfieldID"},
+    {"NewObjectA",          "jobject"},
+    {"NewObjectV",          "jobject"},
+    {"NewObject",           "jobject"},
+    {"NewStringUTF",        "jstring"},
+    {"NewString",           "jstring"},
+    {"NewGlobalRef",        "jobject"},
+    {"NewLocalRef",         "jobject"},
+    {"NewWeakGlobalRef",    "jobject"},
+    {"AllocObject",         "jobject"},
+    {"ExceptionOccurred",   "jthrowable"},
+    {"NewDirectByteBuffer", "jobject"},
+    {"ToReflectedMethod",   "jobject"},
+    {"ToReflectedField",    "jobject"},
+    {"PopLocalFrame",       "jobject"},
+    {"RegisterNatives",     "jint"},
+    {"UnregisterNatives",   "jint"},
+    {"GetVersion",          "jint"},
+    {"Throw",               "jint"},
+    {"ThrowNew",            "jint"},
+    {"PushLocalFrame",      "jint"},
+    {"MonitorEnter",        "jint"},
+    {"MonitorExit",         "jint"},
+    {"GetStringLength",     "jsize"},
+    {"GetStringUTFLength",  "jsize"},
+    {"GetArrayLength",      "jsize"},
+    {"IsInstanceOf",        "jboolean"},
+    {"IsAssignableFrom",    "jboolean"},
+    {"IsSameObject",        "jboolean"},
+    {"ExceptionCheck",      "jboolean"},
+};
+static const size_t kJniReturnTypesCount =
+    sizeof(kJniReturnTypes)/sizeof(kJniReturnTypes[0]);
+
+static const char* lookup_jni_return_type(const std::string& func) {
+    for (size_t i = 0; i < kJniReturnTypesCount; ++i)
+        if (func == kJniReturnTypes[i].func)
+            return kJniReturnTypes[i].ret_type;
+    return nullptr;
+}
+
+// Infer {var_name → jni_type} from assignment lines.
+static std::map<std::string,std::string> infer_local_types(
+        const std::vector<std::string>& lines) {
+    std::map<std::string,std::string> m;
+
+    for (const auto& line : lines) {
+        size_t arrow = line.find("->");
+        if (arrow == std::string::npos || arrow == 0) continue;
+        // Require ')' immediately before '->' (end of vtable dereference)
+        if (line[arrow - 1] != ')') continue;
+
+        // Read function name after '->'
+        size_t fn_start = arrow + 2;
+        size_t fn_end   = fn_start;
+        while (fn_end < line.size() &&
+               (std::isalnum((unsigned char)line[fn_end]) || line[fn_end]=='_'))
+            ++fn_end;
+        if (fn_end == fn_start) continue;
+        std::string func(line, fn_start, fn_end - fn_start);
+
+        if (fn_end >= line.size() || line[fn_end] != '(') continue;
+
+        // --- Special case: GetEnv output arg ---
+        // Pattern: (*vm)->GetEnv(vm, &<var>, ...)
+        if (func == "GetEnv") {
+            size_t p = fn_end + 1;
+            // Skip first arg (vm)
+            while (p < line.size() && line[p] != ',' && line[p] != ')') ++p;
+            if (p >= line.size() || line[p] != ',') continue;
+            ++p;
+            while (p < line.size() && line[p] == ' ') ++p;
+            if (p >= line.size() || line[p] != '&') continue;
+            ++p;
+            size_t vs = p;
+            while (p < line.size() && (std::isalnum((unsigned char)line[p]) || line[p]=='_')) ++p;
+            if (p == vs) continue;
+            m[std::string(line, vs, p - vs)] = "JNIEnv *";
+            continue;
+        }
+
+        const char* ret = lookup_jni_return_type(func);
+        if (!ret) continue;
+
+        // Walk backwards from arrow to find `= (`  (the vtable call)
+        // Then find the `=` assignment operator and extract LHS variable.
+        // The expression to skip backwards over: (* ... )->
+        // We just search backwards for '=' preceded by whitespace.
+        int64_t eq = static_cast<int64_t>(arrow) - 1;
+        // skip whitespace, '*', '(' that make up (*<env>)
+        while (eq >= 0 && (line[eq]==' '||line[eq]=='\t'||line[eq]=='*'||line[eq]=='(')) --eq;
+        if (eq < 0 || line[eq] != '=') continue;
+        --eq;
+        while (eq >= 0 && (line[eq]==' '||line[eq]=='\t')) --eq;
+        if (eq < 0 || (!std::isalnum((unsigned char)line[eq]) && line[eq]!='_')) continue;
+
+        int64_t ve = eq + 1;
+        int64_t vs = ve;
+        while (vs > 0 && (std::isalnum((unsigned char)line[vs-1]) || line[vs-1]=='_')) --vs;
+        if (vs == ve) continue;
+        std::string var(line, static_cast<size_t>(vs), static_cast<size_t>(ve - vs));
+        m[var] = ret;
+    }
+    return m;
+}
+
+// Rewrite a declaration line's type if the variable is in type_map.
+// Ghidra declaration forms:
+//   "  int8 iVar4;"     "  int8 *piStack_48;"    "  xunknown4 xVar3;"
+// New type replaces the old type token.  Pointer stars are dropped because
+// the JNI types already encode pointer-ness (jclass, JNIEnv *, …).
+static std::string fix_decl_type(const std::string& line,
+                                  const std::map<std::string,std::string>& tm) {
+    if (line.empty() || (line[0]!=' ' && line[0]!='\t')) return line;
+    size_t p = 0;
+    while (p < line.size() && (line[p]==' '||line[p]=='\t')) ++p;
+    size_t type_start = p;
+    // Type token: word chars
+    while (p < line.size() && (std::isalnum((unsigned char)line[p])||line[p]=='_')) ++p;
+    if (p == type_start) return line;
+    size_t type_end = p;
+    // Skip spaces and pointer stars between type and var name
+    while (p < line.size() && (line[p]==' '||line[p]=='\t'||line[p]=='*')) ++p;
+    size_t var_start = p;
+    while (p < line.size() && (std::isalnum((unsigned char)line[p])||line[p]=='_')) ++p;
+    if (p == var_start) return line;
+    std::string var(line, var_start, p - var_start);
+    // Must end with ';' (or '[' for arrays)
+    size_t q = p;
+    while (q < line.size() && (line[q]==' '||line[q]=='\t')) ++q;
+    if (q >= line.size() || (line[q]!=';' && line[q]!='[')) return line;
+
+    auto it = tm.find(var);
+    if (it == tm.end()) return line;
+
+    std::string leading(line, 0, type_start);
+    std::string rest(line, p, std::string::npos);  // from var_name onward
+    // If new type already ends with space or '*', no extra space needed.
+    const std::string& nt = it->second;
+    bool needs_space = !nt.empty() && nt.back() != ' ' && nt.back() != '*';
+    return leading + nt + (needs_space ? " " : "") + rest;
+}
+
+// Entry point: infer local types and fix declarations.
+static std::string resolve_jni_locals(const std::string& code) {
+    std::vector<std::string> lines = split_lines(code);
+    auto tm = infer_local_types(lines);
+    if (tm.empty()) return code;
+    std::string result;
+    result.reserve(code.size());
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i) result += '\n';
+        result += fix_decl_type(lines[i], tm);
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
 // JNI kind detection
 // ---------------------------------------------------------------------------
 
@@ -522,7 +701,7 @@ static JniKind detect_kind(const std::string& name) {
 // Cache version tag — prepended to stored pseudocode so stale entries
 // (from before vtable/string resolution was added) are auto-invalidated.
 // Must NOT contain characters that appear in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V3\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V4\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -570,6 +749,12 @@ std::string jni_annotate(const std::string& func_name,
 
     // ---- 4. Replace JNI version constants ----------------------------------
     result = replace_jni_constants(result);
+
+    // ---- 5. Infer local variable types from JNI call sites -----------------
+    // Scans for `var = (*env)->FindClass(...)` patterns and fixes the
+    // Ghidra-generated declarations (e.g. "int8 iVar4;" → "jclass iVar4;").
+    // Also retyping GetEnv output arg to "JNIEnv *<var>;".
+    result = resolve_jni_locals(result);
 
     return result;
 }
