@@ -67,7 +67,8 @@ const char* peek_decompile_get_last_error(void) {
 }
 
 char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
-                            const char* func_name, const char* tmp_path) {
+                            const char* func_name, const char* tmp_path,
+                            uint64_t real_func_addr) {
     g_last_error.clear();
 
     if (!g_init_ok) {
@@ -100,6 +101,13 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
         try {
             arch = new RawBinaryArchitecture(tmp_path, "AARCH64:LE:64:v8A",
                                              &g_null_stream);
+            // adjustvma must be set BEFORE init() — it tells buildLoader()
+            // to treat file byte 0 as living at real_func_addr, so that
+            // PC-relative branch/call encodings (which were originally
+            // computed against the function's real position in the whole
+            // binary) resolve to their correct absolute targets instead of
+            // being interpreted relative to a fake base of 0.
+            arch->adjustvma = (long)real_func_addr;
             arch->init(store);
             LOGI_B("[S2] arch init OK for %s", func_name);
         } catch (const LowlevelError& e) {
@@ -111,17 +119,47 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
         }
 
         AddrSpace* ram = arch->getDefaultCodeSpace();
-        Address funcAddr(ram, 0);
+        if (!ram) {
+            delete arch;
+            std::remove(tmp_path);
+            return fail("[S2:getDefaultCodeSpace]", func_name,
+                         "default code space is null after init()");
+        }
+
+        // Guard against real_func_addr + len overflowing or landing outside
+        // what this address space can represent — constructing an Address
+        // with an out-of-range offset is not bounds-checked by Ghidra's
+        // Address class itself, so an invalid value here can silently
+        // corrupt state or crash later (e.g. inside followFlow) rather than
+        // throwing a catchable exception at construction time.
+        uintb highest = ram->getHighest();
+        if ((uintb)real_func_addr > highest ||
+            (len > 0 && (uintb)(real_func_addr + len - 1) > highest)) {
+            delete arch;
+            std::remove(tmp_path);
+            std::ostringstream oss;
+            oss << "function range [0x" << std::hex << real_func_addr
+                << ", 0x" << (real_func_addr + len - 1)
+                << "] exceeds address space highest 0x" << highest;
+            return fail("[S3:range_check]", func_name, oss.str().c_str());
+        }
+
+        // adjustvma maps file byte 0 → real_func_addr in the address space,
+        // so funcAddr, baddr and eaddr must all be in terms of the real VA.
+        Address funcAddr(ram, (uintb)real_func_addr);
 
         // ------------------------------------------------------------------
         // Stage 3 — register function symbol + followFlow (SLEIGH lift)
         //
-        // Key: eaddr is bounded to the function's own byte range so that
-        // PC-relative branches whose targets were encoded against the
-        // original VA (not 0) don't wrap around into garbage addresses and
-        // cause followFlow to attempt disassembly outside the loaded image.
+        // All three addresses use the real VA so that PC-relative branch
+        // targets (encoded against the original binary layout) resolve
+        // correctly. Calls to addresses outside [baddr, eaddr] — calls to
+        // other functions elsewhere in the binary, near or far — are
+        // naturally treated as non-followed call edges by followFlow and
+        // do not require special-casing.
         // ------------------------------------------------------------------
-        LOGI_B("[S3] addFunction + followFlow for %s (len=%zu)", func_name, len);
+        LOGI_B("[S3] addFunction + followFlow for %s (addr=0x%llx len=%zu)",
+               func_name, (unsigned long long)real_func_addr, len);
         Funcdata* fd = nullptr;
         try {
             fd = arch->symboltab->getGlobalScope()
@@ -133,14 +171,8 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
                 return fail("[S3:addFunction]", func_name, "returned null Funcdata");
             }
 
-            Address baddr(ram, 0);
-            // Exclusive upper bound: restrict flow analysis to the function
-            // body only.  Using ram->getHighest() here is wrong for raw
-            // images because PC-relative branch encodings are relative to
-            // the original VA, not to address 0, so out-of-body targets
-            // can wrap into the huge address space and trigger SLEIGH to
-            // attempt disassembly of garbage bytes.
-            Address eaddr(ram, (uintb)(len - 1));
+            Address baddr(ram, (uintb)real_func_addr);
+            Address eaddr(ram, (uintb)(real_func_addr + len - 1));
             fd->followFlow(baddr, eaddr);
             LOGI_B("[S3] followFlow OK for %s", func_name);
         } catch (const LowlevelError& e) {
