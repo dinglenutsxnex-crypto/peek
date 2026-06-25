@@ -23,6 +23,7 @@
 #include "xref_detector.h"
 #include "db_cache.h"
 #include "decompiler_bridge.h"
+#include "jni_annotator.h"
 
 #include <jni.h>
 #include <android/log.h>
@@ -720,6 +721,11 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
 
     std::string result(result_cstr);
     free(result_cstr);
+
+    // Apply JNI-aware type annotations if the function name matches a known
+    // JNI pattern (JNI_OnLoad, JNI_OnUnload, Java_*).  No-op for anything
+    // else.  Done before caching so the annotated form is what gets stored.
+    result = jni_annotate(fn.name, result);
 
     ctx->db->store_pseudocode((int64_t)func_id, result);
     LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
