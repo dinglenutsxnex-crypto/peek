@@ -1,0 +1,99 @@
+JNI_OnLoad shows correct ASM disassembly but fails to decompile — not a
+regression, decompilation for this function specifically has never worked.
+I need real debugging, not a re-test. Here's the full instruction listing
+for context (address, bytes, mnemonic, operands) — 0x4610 to 0x46D0:
+
+0000000000004610  ff 43 01 d1   sub  sp, sp, #0x50
+0000000000004614  f4 4f 03 a9   stp  x20, x19, [sp, #0x30]
+0000000000004618  fd 7b 04 a9   stp  x29, x30, [sp, #0x40]
+000000000000461C  fd 03 01 91   add  x29, sp, #0x40
+0000000000004620  53 d0 3b d5   mrs  x19, tpidr_el0
+0000000000004624  68 16 40 f9   ldr  x8, [x19, #0x28]
+0000000000004628  c2 00 80 52   mov  w2, #6
+000000000000462C  d4 00 80 52   mov  w20, #6
+0000000000004630  e1 23 00 91   add  x1, sp, #8
+0000000000004634  a8 83 1e f8   stur  x8, [x29, #-0x18]
+0000000000004638  08 00 40 f9   ldr  x8, [x0]
+000000000000463C  22 00 a0 72   movk  w2, #1, lsl #16
+0000000000004640  34 00 a0 72   movk  w20, #1, lsl #16
+0000000000004644  08 19 40 f9   ldr  x8, [x8, #0x30]
+0000000000004648  00 01 3f d6   blr  x8
+000000000000464C  60 00 00 34   cbz  w0, #0x4658
+0000000000004650  00 00 80 12   mov  w0, #-1
+0000000000004654  17 00 00 14   b  #0x46b0
+0000000000004658  e0 07 40 f9   ldr  x0, [sp, #8]
+000000000000465C  01 00 00 90   adrp  x1, #0x4000
+0000000000004660  21 38 1c 91   add  x1, x1, #0x70e
+0000000000004664  08 00 40 f9   ldr  x8, [x0]
+0000000000004668  08 19 40 f9   ldr  x8, [x8, #0x30]
+000000000000466C  00 01 3f d6   blr  x8
+0000000000004670  e1 03 00 aa   mov  x1, x0
+0000000000004674  e0 fe ff b4   cbz  x0, #0x4650
+0000000000004678  88 00 00 d0   adrp  x8, #0x16000
+000000000000467C  08 e1 24 91   add  x8, x8, #0x938
+0000000000004680  09 09 40 f9   ldr  x9, [x8, #0x10]
+0000000000004684  00 01 c0 3d   ldr  q0, [x8]
+0000000000004688  e0 07 40 f9   ldr  x0, [sp, #8]
+000000000000468C  e2 43 00 91   add  x2, sp, #0x10
+0000000000004690  e9 13 00 f9   str  x9, [sp, #0x20]
+0000000000004694  e0 07 80 3d   str  q0, [sp, #0x10]
+0000000000004698  08 00 40 f9   ldr  x8, [x0]
+000000000000469C  e3 03 00 32   mov  w3, #1
+00000000000046A0  08 5d 43 f9   ldr  x8, [x8, #0x6b8]
+00000000000046A4  00 01 3f d6   blr  x8
+00000000000046A8  1f 00 00 71   cmp  w0, #0
+00000000000046AC  80 02 9f 5a   csinv  w0, w20, wzr, eq
+00000000000046B0  68 16 40 f9   ldr  x8, [x19, #0x28]
+00000000000046B4  a9 83 5e f8   ldur  x9, [x29, #-0x18]
+00000000000046B8  1f 01 09 eb   cmp  x8, x9
+00000000000046BC  a1 00 00 54   b.ne  #0x46d0
+00000000000046C0  fd 7b 44 a9   ldp  x29, x30, [sp, #0x40]
+00000000000046C4  f4 4f 43 a9   ldp  x20, x19, [sp, #0x30]
+00000000000046C8  ff 43 01 91   add  sp, sp, #0x50
+00000000000046CC  c0 03 5f d6   ret
+00000000000046D0  40 ff ff 97   bl  #0x43d0
+
+
+Notable: this function uses csinv (conditional select invert) at 0x46AC and
+a conditional branch b.ne at 0x46BC — both more elaborate than anything in
+the two functions that already decompile successfully (those only used cbz/
+b unconditional). Check specifically whether AArch64's SLEIGH spec/our
+vendored .sla has correct semantics for csinv and conditional-flag-based
+branches (b.ne, which depends on NZCV flag state set by the preceding cmp) —
+a gap or malformed p-code from either of these is a real, specific candidate
+for why this function fails where simpler ones succeed.
+
+Do this debugging directly, don't just retry and hope:
+
+1. Add error logging around every stage of the decompile pipeline for this
+   specific function (SLEIGH lift, p-code generation, action pipeline,
+   pretty-print) so we can see exactly which stage fails, not just a final
+   "unavailable" result.
+2. Run JNI_OnLoad's real bytes through this instrumented pipeline and report
+   the EXACT error/exception message and which stage it occurred at. If it's
+   a SLEIGH-level error, report the specific instruction (by address) SLEIGH
+   choked on. If it's a crash rather than a clean exception, report whatever
+   crash/signal info is available (logcat stack trace, ASAN output if
+   enabled, etc.).
+3. Based on the specific failure, identify the fix:
+   - If it's an unrecognized/malformed instruction (e.g. csinv or a flag-
+     dependent branch), check whether the AARCH64.sla file actually includes
+     correct semantics for it — this may mean the .sla generation in an
+     earlier step (Stage 2) needs to be re-checked rather than something
+     fixable in decompiler_bridge.cpp.
+   - If it's a crash in the action pipeline (not a clean lift failure), it
+     may be an edge case in how Funcdata/Architecture is being constructed
+     for this function (e.g. larger function, more basic blocks, more flag-
+     dependent control flow than the test cases handled).
+   - If it's something else entirely, report that instead of forcing one of
+     these explanations.
+4. Currently, when decompilation fails, the UI just shows "decompilation
+   unavailable" with no detail. In addition to fixing the underlying issue,
+   make failures surface a specific reason in a debug build (e.g. "SLEIGH
+   lift failed at address 0x46AC: <error>") rather than a generic message —
+   this makes future failures on other functions debuggable immediately
+   instead of requiring this kind of manual investigation each time.
+
+Do NOT report success until you've shown the actual exact error you found
+and the actual exact pseudocode output after the fix — same standard as
+previous stages.

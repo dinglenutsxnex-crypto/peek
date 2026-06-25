@@ -1,0 +1,50 @@
+JNI_OnLoad shows correct ASM disassembly but fails to decompile — not a
+regression, decompilation for this function specifically has never worked.
+I need real debugging, not a re-test. Here's the full instruction listing
+for context (address, bytes, mnemonic, operands) — 0x4610 to 0x46D0:
+
+[paste the full ARM listing from above]
+
+Notable: this function uses csinv (conditional select invert) at 0x46AC and
+a conditional branch b.ne at 0x46BC — both more elaborate than anything in
+the two functions that already decompile successfully (those only used cbz/
+b unconditional). Check specifically whether AArch64's SLEIGH spec/our
+vendored .sla has correct semantics for csinv and conditional-flag-based
+branches (b.ne, which depends on NZCV flag state set by the preceding cmp) —
+a gap or malformed p-code from either of these is a real, specific candidate
+for why this function fails where simpler ones succeed.
+
+Do this debugging directly, don't just retry and hope:
+
+1. Add error logging around every stage of the decompile pipeline for this
+   specific function (SLEIGH lift, p-code generation, action pipeline,
+   pretty-print) so we can see exactly which stage fails, not just a final
+   "unavailable" result.
+2. Run JNI_OnLoad's real bytes through this instrumented pipeline and report
+   the EXACT error/exception message and which stage it occurred at. If it's
+   a SLEIGH-level error, report the specific instruction (by address) SLEIGH
+   choked on. If it's a crash rather than a clean exception, report whatever
+   crash/signal info is available (logcat stack trace, ASAN output if
+   enabled, etc.).
+3. Based on the specific failure, identify the fix:
+   - If it's an unrecognized/malformed instruction (e.g. csinv or a flag-
+     dependent branch), check whether the AARCH64.sla file actually includes
+     correct semantics for it — this may mean the .sla generation in an
+     earlier step (Stage 2) needs to be re-checked rather than something
+     fixable in decompiler_bridge.cpp.
+   - If it's a crash in the action pipeline (not a clean lift failure), it
+     may be an edge case in how Funcdata/Architecture is being constructed
+     for this function (e.g. larger function, more basic blocks, more flag-
+     dependent control flow than the test cases handled).
+   - If it's something else entirely, report that instead of forcing one of
+     these explanations.
+4. Currently, when decompilation fails, the UI just shows "decompilation
+   unavailable" with no detail. In addition to fixing the underlying issue,
+   make failures surface a specific reason in a debug build (e.g. "SLEIGH
+   lift failed at address 0x46AC: <error>") rather than a generic message —
+   this makes future failures on other functions debuggable immediately
+   instead of requiring this kind of manual investigation each time.
+
+Do NOT report success until you've shown the actual exact error you found
+and the actual exact pseudocode output after the fix — same standard as
+previous stages.
