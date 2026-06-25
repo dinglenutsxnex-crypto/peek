@@ -29,6 +29,8 @@
 #include <android/log.h>
 
 #include <algorithm>
+#include <cctype>
+#include <cstdlib>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -67,6 +69,7 @@ static std::string jstr(JNIEnv* env, jstring s) {
 // ---------------------------------------------------------------------------
 
 // Returns pointer into elf.data for a given VA range, or nullptr.
+// Only walks executable sections (for code bytes).
 static const uint8_t* va_to_ptr(const ElfParseResult& elf,
                                   uint64_t va, uint64_t size) {
     for (const auto& sec : elf.sections) {
@@ -80,6 +83,204 @@ static const uint8_t* va_to_ptr(const ElfParseResult& elf,
         }
     }
     return nullptr;
+}
+
+// ---------------------------------------------------------------------------
+// ELF string + data-reference resolution helpers
+// ---------------------------------------------------------------------------
+
+// Try to read a null-terminated printable ASCII string at the given virtual
+// address from ANY mapped section (including .rodata, not just .text).
+// Returns empty string if the address is not mapped, the first byte is not
+// printable ASCII, or the string exceeds max_len without a terminator.
+static std::string elf_read_cstring(const ElfParseResult& elf,
+                                     uint64_t va,
+                                     size_t max_len = 512) {
+    for (const auto& sec : elf.sections) {
+        if (sec.size == 0) continue;
+        if (va < sec.address || va >= sec.address + sec.size) continue;
+        uint64_t file_off = sec.offset + (va - sec.address);
+        if (file_off >= elf.data.size()) continue;
+        std::string s;
+        for (size_t i = 0; i < max_len; ++i) {
+            if (file_off + i >= elf.data.size()) break;
+            uint8_t b = elf.data[file_off + i];
+            if (b == 0) return s;                // null terminator — done
+            if (b < 0x20 || b > 0x7e) return ""; // non-printable — not a string
+            s += static_cast<char>(b);
+        }
+        return ""; // exceeded max_len without terminator
+    }
+    return ""; // VA not in any section
+}
+
+// Escape a raw string for embedding inside a C comment (no */ allowed).
+static std::string escape_for_comment(const std::string& s) {
+    std::string out;
+    out.reserve(s.size());
+    for (char c : s) {
+        if (c == '*' || c == '/') { out += '\\'; out += c; }
+        else out += c;
+    }
+    return out;
+}
+
+// Known JNI functions whose N-th argument (0-based, after env) is a C-string
+// VA that Ghidra shows as a hex literal.  We try to resolve and annotate it.
+struct StringArgSpec { const char* func; int arg_after_env; }; // 0 = first after env
+static const StringArgSpec kStringArgFuncs[] = {
+    {"FindClass",         0},
+    {"DefineClass",       0},
+    {"ThrowNew",          1},
+    {"GetMethodID",       1},  // name
+    {"GetMethodID",       2},  // sig  — handled by the loop below
+    {"GetStaticMethodID", 1},
+    {"GetStaticMethodID", 2},
+    {"GetFieldID",        1},
+    {"GetFieldID",        2},
+    {"GetStaticFieldID",  1},
+    {"GetStaticFieldID",  2},
+    {"NewStringUTF",      0},
+};
+
+// Annotate Ghidra data references and known JNI string arguments in-place.
+//
+// Pass 1 — xRam<hex16>:  Ghidra emits these for data VAs it couldn't
+//   resolve.  We look them up in the ELF and, if printable, append a
+//   /* "string" */ comment.
+//
+// Pass 2 — JNI string args: after vtable calls have been resolved,
+//   patterns like  ->FindClass(env, 0xABCD)  are scanned; if 0xABCD is
+//   a string VA we add an inline comment.
+static std::string resolve_data_refs(const std::string& code,
+                                      const ElfParseResult& elf) {
+    // ---- Pass 1: xRam<16-digit-hex> -------------------------------------
+    std::string out;
+    out.reserve(code.size() + 512);
+    {
+        const char  XPFX[]    = "xRam";
+        const size_t XPFX_LEN = 4;
+        size_t pos = 0;
+        while (pos < code.size()) {
+            size_t f = code.find(XPFX, pos);
+            if (f == std::string::npos) { out.append(code, pos, std::string::npos); break; }
+            // Word boundary check before "xRam"
+            if (f > 0 && (std::isalnum((unsigned char)code[f-1]) || code[f-1]=='_')) {
+                out.append(code, pos, f - pos + 1);
+                pos = f + 1;
+                continue;
+            }
+            size_t p = f + XPFX_LEN;
+            size_t hex_start = p;
+            while (p < code.size() && std::isxdigit((unsigned char)code[p])) ++p;
+            if (p - hex_start != 16) { // must be exactly 16 hex digits
+                out.append(code, pos, f - pos + 1);
+                pos = f + 1;
+                continue;
+            }
+            uint64_t va = std::strtoull(
+                std::string(code, hex_start, 16).c_str(), nullptr, 16);
+            out.append(code, pos, p - pos); // keep original xRam token
+            std::string s = elf_read_cstring(elf, va);
+            if (!s.empty())
+                out += " /* \"" + escape_for_comment(s) + "\" */";
+            pos = p;
+        }
+    }
+
+    // ---- Pass 2: JNI string arguments ------------------------------------
+    // Pattern: -><FuncName>(<env_var>, ..., 0x<hex>, ...)
+    // We skip scanning unless the ELF has some data to resolve.
+    std::string out2;
+    out2.reserve(out.size());
+    {
+        size_t pos = 0;
+        while (pos < out.size()) {
+            // Find a "->" that precedes a known string-arg JNI function.
+            size_t arrow = out.find("->", pos);
+            if (arrow == std::string::npos) {
+                out2.append(out, pos, std::string::npos);
+                break;
+            }
+
+            // Read the function name after "->"
+            size_t fn_start = arrow + 2;
+            size_t fn_end   = fn_start;
+            while (fn_end < out.size() && (std::isalnum((unsigned char)out[fn_end]) || out[fn_end]=='_'))
+                ++fn_end;
+            std::string callee(out, fn_start, fn_end - fn_start);
+
+            // Check if it's a known string-arg function
+            const StringArgSpec* spec = nullptr;
+            // Collect all specs for this callee (there may be multiple for
+            // different arg positions, e.g. GetMethodID name & sig).
+            // We'll build a list of arg indices to resolve.
+            int resolve_args[4]; int resolve_n = 0;
+            for (const auto& sas : kStringArgFuncs) {
+                if (callee == sas.func && resolve_n < 4)
+                    resolve_args[resolve_n++] = sas.arg_after_env;
+            }
+
+            if (resolve_n == 0 || fn_end >= out.size() || out[fn_end] != '(') {
+                // Not a string-arg function or no '(' — copy up to and including '->'
+                out2.append(out, pos, arrow - pos + 2);
+                pos = arrow + 2;
+                continue;
+            }
+
+            // Copy everything up to and including the opening '(' of the call
+            out2.append(out, pos, fn_end - pos + 1);
+            size_t call_pos = fn_end + 1; // first char inside '('
+
+            // Walk arguments, annotating hex literals at the target positions.
+            // We track: arg_index (after env = arg 0 is the first arg; arg after env
+            // starts at arg_after_env relative to arg 1, i.e. skip arg 0 = env var).
+            // Actual arg index inside the call (0 = env/this, 1 = first real, ...).
+            int  arg_idx    = 0;
+            int  paren_depth = 1;
+            size_t p = call_pos;
+
+            while (p < out.size() && paren_depth > 0) {
+                char c = out[p];
+                if (c == '(') { ++paren_depth; out2 += c; ++p; continue; }
+                if (c == ')') {
+                    --paren_depth;
+                    out2 += c; ++p;
+                    continue;
+                }
+                if (c == ',' && paren_depth == 1) {
+                    ++arg_idx;
+                    out2 += c; ++p;
+                    continue;
+                }
+                // Check if this arg position needs string resolution
+                bool should_resolve = false;
+                for (int i = 0; i < resolve_n; ++i)
+                    if (arg_idx == resolve_args[i] + 1) // +1: skip env arg (arg 0)
+                        should_resolve = true;
+
+                if (should_resolve && p + 1 < out.size() &&
+                    out[p] == '0' && (out[p+1] == 'x' || out[p+1] == 'X')) {
+                    // Hex literal — read it
+                    size_t hex_start = p + 2;
+                    size_t q = hex_start;
+                    while (q < out.size() && std::isxdigit((unsigned char)out[q])) ++q;
+                    out2.append(out, p, q - p); // copy "0x..."
+                    uint64_t va = std::strtoull(
+                        std::string(out, hex_start, q - hex_start).c_str(), nullptr, 16);
+                    std::string s = elf_read_cstring(elf, va);
+                    if (!s.empty())
+                        out2 += " /* \"" + escape_for_comment(s) + "\" */";
+                    p = q;
+                } else {
+                    out2 += c; ++p;
+                }
+            }
+            pos = p;
+        }
+    }
+
+    return out2;
 }
 
 // Aggregate VA bounds of all executable sections.
@@ -655,10 +856,22 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     if (ctx->binary_id < 0) return env->NewStringUTF("");
 
     // Check cached pseudocode first.
-    std::string cached = ctx->db->get_pseudocode((int64_t)func_id);
-    if (!cached.empty()) {
-        LOGI("Pseudocode cache hit funcId=%lld", (long long)func_id);
-        return env->NewStringUTF(cached.c_str());
+    // The cache stores a version tag as the first line so stale entries
+    // (produced before vtable/string resolution was added) are detected
+    // and re-decompiled automatically.
+    const char* CACHE_TAG    = JNI_ANNOTATOR_CACHE_TAG;
+    const size_t CACHE_TAG_LEN = std::strlen(CACHE_TAG);
+    {
+        std::string cached = ctx->db->get_pseudocode((int64_t)func_id);
+        if (!cached.empty()) {
+            if (cached.size() >= CACHE_TAG_LEN &&
+                cached.compare(0, CACHE_TAG_LEN, CACHE_TAG) == 0) {
+                LOGI("Pseudocode cache hit funcId=%lld", (long long)func_id);
+                return env->NewStringUTF(cached.c_str() + CACHE_TAG_LEN);
+            }
+            LOGI("Pseudocode cache stale (version mismatch) funcId=%lld — re-decompiling",
+                 (long long)func_id);
+        }
     }
 
     // Fetch function record from DB.
@@ -722,12 +935,17 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     std::string result(result_cstr);
     free(result_cstr);
 
-    // Apply JNI-aware type annotations if the function name matches a known
-    // JNI pattern (JNI_OnLoad, JNI_OnUnload, Java_*).  No-op for anything
-    // else.  Done before caching so the annotated form is what gets stored.
+    // 1. JNI-aware signature, param renames, vtable call resolution, and
+    //    JNI constant naming.  No-op for non-JNI functions.
     result = jni_annotate(fn.name, result);
 
-    ctx->db->store_pseudocode((int64_t)func_id, result);
+    // 2. ELF data-reference resolution: annotate xRam<addr> tokens with
+    //    the string they point to, and annotate known JNI string arguments
+    //    (FindClass, GetMethodID, etc.) whose value Ghidra shows as a hex VA.
+    result = resolve_data_refs(result, elf);
+
+    // 3. Store with a version tag so stale cache entries are auto-detected.
+    ctx->db->store_pseudocode((int64_t)func_id, CACHE_TAG + result);
     LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
 
     return env->NewStringUTF(result.c_str());
