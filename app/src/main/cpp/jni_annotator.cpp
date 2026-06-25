@@ -606,13 +606,28 @@ static std::map<std::string,std::string> infer_local_types(
         const char* ret = lookup_jni_return_type(func);
         if (!ret) continue;
 
-        // Walk backwards from arrow to find `= (`  (the vtable call)
-        // Then find the `=` assignment operator and extract LHS variable.
-        // The expression to skip backwards over: (* ... )->
-        // We just search backwards for '=' preceded by whitespace.
+        // Walk backwards from arrow to find the '=' assignment operator.
+        // We must skip the vtable dereference group (*<var>) which contains
+        // balanced parentheses, stars, and identifier chars.  Simple char-set
+        // skipping is not enough — we need to skip balanced paren groups so
+        // that `iVar4 = (*env)->FindClass(...)` works correctly even when the
+        // assignment appears inside a compound if-condition.
         int64_t eq = static_cast<int64_t>(arrow) - 1;
-        // skip whitespace, '*', '(' that make up (*<env>)
-        while (eq >= 0 && (line[eq]==' '||line[eq]=='\t'||line[eq]=='*'||line[eq]=='(')) --eq;
+        while (eq >= 0) {
+            char ec = line[eq];
+            if (ec == ' ' || ec == '\t' || ec == '*') { --eq; continue; }
+            if (ec == ')') {
+                // Skip a balanced parenthesised group backward.
+                int depth = 0;
+                while (eq >= 0) {
+                    if      (line[eq] == ')') ++depth;
+                    else if (line[eq] == '(') { if (--depth == 0) { --eq; break; } }
+                    --eq;
+                }
+                continue;
+            }
+            break;
+        }
         if (eq < 0 || line[eq] != '=') continue;
         --eq;
         while (eq >= 0 && (line[eq]==' '||line[eq]=='\t')) --eq;
@@ -1051,6 +1066,243 @@ static std::string collapse_native_methods(const std::string& code) {
 }
 
 // ---------------------------------------------------------------------------
+// Stack canary stripping
+//
+// ARM64/Android compilers emit three artifacts for every stack-guarded frame:
+//
+//   1. <tls_var>    = tpidr_el0;
+//   2. <canary_var> = *(<int_type> *)(<tls_var> + 0x28);
+//   3. if (*(<int_type> *)(<tls_var> + 0x28) != <canary_var>) { <fail>; }
+//
+// These carry zero semantic information and are stripped universally.
+// Declarations of the removed variables are also dropped when they become
+// unused, and consecutive blank lines left by the removals are collapsed.
+// ---------------------------------------------------------------------------
+
+// Find the identifier assigned from "tpidr_el0" and return it.
+static std::string find_tpidr_var(const std::vector<std::string>& lines) {
+    for (const auto& line : lines) {
+        size_t p = line.find("= tpidr_el0;");
+        if (p == std::string::npos) continue;
+        // Walk backward past whitespace to the identifier.
+        int64_t i = (int64_t)p - 1;
+        while (i >= 0 && (line[i]==' '||line[i]=='\t')) --i;
+        if (i < 0 || !is_id(line[i])) continue;
+        int64_t end = i + 1;
+        while (i > 0 && is_id(line[i-1])) --i;
+        return std::string(line, (size_t)i, (size_t)(end - i));
+    }
+    return "";
+}
+
+// Find the identifier assigned from "*(type *)(<tls_var> + 0xNN);"
+static std::string find_canary_var(const std::vector<std::string>& lines,
+                                    const std::string& tls_var) {
+    if (tls_var.empty()) return "";
+    std::string needle = "(" + tls_var + " + 0x";
+    for (const auto& line : lines) {
+        if (line.find(needle) == std::string::npos) continue;
+        // Must be a simple assignment: <ident> = *(...)
+        size_t p = 0;
+        while (p < line.size() && (line[p]==' '||line[p]=='\t')) ++p;
+        size_t id_start = p;
+        while (p < line.size() && is_id(line[p])) ++p;
+        if (p == id_start) continue;
+        std::string var(line, id_start, p - id_start);
+        while (p < line.size() && (line[p]==' '||line[p]=='\t')) ++p;
+        if (p >= line.size() || line[p] != '=') continue;
+        ++p;
+        while (p < line.size() && (line[p]==' '||line[p]=='\t')) ++p;
+        if (p >= line.size() || line[p] != '*') continue;
+        return var;
+    }
+    return "";
+}
+
+// Remove the if-block whose condition references the canary.
+// Handles both one-line and multi-line forms; blanks every line in the block.
+static void remove_canary_if_block(std::vector<std::string>& lines,
+                                    const std::string& tls_var,
+                                    const std::string& canary_var) {
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string& l = lines[i];
+        if (l.find("if (") == std::string::npos) continue;
+        bool refs_tls    = !tls_var.empty()    && l.find(tls_var)    != std::string::npos;
+        bool refs_canary = !canary_var.empty() && l.find(canary_var) != std::string::npos;
+        if (!refs_tls && !refs_canary) continue;
+
+        // Find the opening '{' and walk braces to the matching '}'.
+        size_t brace = l.find('{');
+        if (brace == std::string::npos) { lines[i] = ""; continue; }
+
+        int depth = 0;
+        size_t end_line = i;
+        bool closed = false;
+        for (size_t j = i; j < lines.size() && !closed; ++j) {
+            size_t k0 = (j == i) ? brace : 0;
+            for (size_t k = k0; k < lines[j].size(); ++k) {
+                if      (lines[j][k] == '{') ++depth;
+                else if (lines[j][k] == '}') { if (--depth == 0) { end_line = j; closed = true; break; } }
+            }
+        }
+        for (size_t j = i; j <= end_line; ++j) lines[j] = "";
+        break; // only one canary check per function
+    }
+}
+
+// Return true if 'var' still appears as a whole identifier in any non-empty
+// line that is NOT a pure declaration of the form "  <type> [*]<var>;"
+// (i.e. the variable is still genuinely used in code, not only declared).
+static bool var_still_used(const std::vector<std::string>& lines,
+                             const std::string& var) {
+    const size_t vlen = var.size();
+    for (const auto& l : lines) {
+        if (l.empty()) continue;
+
+        // Detect and skip pure declaration lines so we don't count "int8 iVar1;"
+        // as a "use" that would prevent the declaration from being removed.
+        // A declaration line has the form: [whitespace] <type-token> [* ]<var> ;
+        {
+            size_t p = 0;
+            while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+            size_t type_start = p;
+            // type token
+            while (p < l.size() && (std::isalnum((unsigned char)l[p])||l[p]=='_')) ++p;
+            if (p != type_start) {
+                // skip optional spaces and stars (pointer decoration)
+                while (p < l.size() && (l[p]==' '||l[p]=='\t'||l[p]=='*')) ++p;
+                // check the next token is exactly `var`
+                if (l.compare(p, vlen, var) == 0) {
+                    size_t q = p + vlen;
+                    while (q < l.size() && (l[q]==' '||l[q]=='\t')) ++q;
+                    if (q < l.size() && (l[q]==';'||l[q]=='['))
+                        continue; // this is just the declaration — skip it
+                }
+            }
+        }
+
+        // Not a declaration — check for a whole-identifier occurrence.
+        size_t pos = 0;
+        while (pos < l.size()) {
+            size_t f = l.find(var, pos);
+            if (f == std::string::npos) break;
+            bool lo = (f == 0)             || !is_id(l[f-1]);
+            bool ro = (f+vlen >= l.size()) || !is_id(l[f+vlen]);
+            if (lo && ro) return true;
+            pos = f + 1;
+        }
+    }
+    return false;
+}
+
+static std::string strip_stack_canary(const std::string& code) {
+    std::vector<std::string> lines = split_lines(code);
+
+    std::string tls_var    = find_tpidr_var(lines);
+    if (tls_var.empty()) return code; // no canary pattern
+
+    std::string canary_var = find_canary_var(lines, tls_var);
+
+    // 1. Blank the tls_var assignment line.
+    for (auto& l : lines) {
+        if (l.find("= tpidr_el0;") != std::string::npos &&
+            l.find(tls_var) != std::string::npos) { l = ""; break; }
+    }
+
+    // 2. Blank the canary_var assignment line.
+    if (!canary_var.empty()) {
+        std::string needle = "(" + tls_var + " + 0x";
+        for (auto& l : lines) {
+            if (l.find(needle) == std::string::npos) continue;
+            size_t p = 0;
+            while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+            if (l.compare(p, canary_var.size(), canary_var) == 0) { l = ""; break; }
+        }
+    }
+
+    // 3. Remove the canary check if-block.
+    remove_canary_if_block(lines, tls_var, canary_var);
+
+    // 4. Drop declarations of tls_var / canary_var when no longer used.
+    if (!var_still_used(lines, tls_var))
+        remove_decl_line(lines, tls_var);
+    if (!canary_var.empty() && !var_still_used(lines, canary_var))
+        remove_decl_line(lines, canary_var);
+
+    // 5. Collapse consecutive blank lines left by the removals.
+    std::string result;
+    result.reserve(code.size());
+    bool prev_blank = false;
+    for (size_t i = 0; i < lines.size(); ++i) {
+        if (i) result += '\n';
+        const std::string& l = lines[i];
+        bool is_blank = l.empty() || l.find_first_not_of(" \t") == std::string::npos;
+        if (!is_blank) { result += l; prev_blank = false; }
+        else if (!prev_blank) { result += l; prev_blank = true; }
+        // else: consecutive blank — skip
+    }
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// Return-variable renaming
+//
+// After all other passes, variables still carrying generic Ghidra names
+// (iVarN, xVarN, uVarN) that appear ONLY as the value in "return <var>;"
+// statements are renamed to "ret".  This is safe — such a variable is the
+// function's sole return accumulator and "ret" is the idiomatic C name for it.
+//
+// Applies to every function, JNI or not.
+// ---------------------------------------------------------------------------
+
+// True if 'name' matches the Ghidra generic local-variable pattern:
+// optional single-letter prefix in [iuxpaf] followed by "Var" and digits.
+static bool is_generic_varname(const std::string& name) {
+    if (name.size() < 5) return false;
+    // Accept iVarN, xVarN, uVarN, pVarN, aVarN, fVarN
+    if (name.compare(1, 3, "Var") != 0) return false;
+    char pfx = name[0];
+    if (pfx!='i' && pfx!='x' && pfx!='u' && pfx!='p' && pfx!='a' && pfx!='f') return false;
+    for (size_t k = 4; k < name.size(); ++k)
+        if (!std::isdigit((unsigned char)name[k])) return false;
+    return true;
+}
+
+static std::string rename_return_var(const std::string& code) {
+    // Avoid collision with an existing "ret" identifier.
+    if (ident_exists(code, "ret")) return code;
+
+    // Collect variables that appear in "return <var>;" statements.
+    std::map<std::string, int> ret_counts;
+    size_t pos = 0;
+    while (pos < code.size()) {
+        size_t f = code.find("return ", pos);
+        if (f == std::string::npos) break;
+        // Must be a statement boundary (not inside an identifier).
+        if (f > 0 && is_id(code[f-1])) { pos = f + 1; continue; }
+        size_t p = f + 7;
+        while (p < code.size() && code[p] == ' ') ++p;
+        size_t vs = p;
+        while (p < code.size() && is_id(code[p])) ++p;
+        if (p == vs) { pos = f + 7; continue; }
+        std::string var(code, vs, p - vs);
+        size_t q = p;
+        while (q < code.size() && code[q] == ' ') ++q;
+        if (q < code.size() && code[q] == ';')
+            ret_counts[var]++;
+        pos = p;
+    }
+
+    for (const auto& kv : ret_counts) {
+        if (!is_generic_varname(kv.first)) continue;
+        // Rename this variable to "ret" throughout.
+        return replace_ident(code, kv.first, "ret");
+        // (declaration type is preserved; only the name token changes)
+    }
+    return code;
+}
+
+// ---------------------------------------------------------------------------
 // JNI kind detection
 // ---------------------------------------------------------------------------
 
@@ -1072,16 +1324,37 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V5\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V6\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
     JniKind kind = detect_kind(func_name);
-    if (kind == JniKind::NONE) return pseudocode;
 
-    std::vector<std::string> lines = split_lines(pseudocode);
+    // -----------------------------------------------------------------------
+    // Universal passes — applied to EVERY function regardless of JNI kind.
+    // These remove compiler instrumentation noise and give generic variables
+    // meaningful names based on usage, matching IDA-quality pseudocode output.
+    // -----------------------------------------------------------------------
 
-    // ---- 1. Fix the function signature line --------------------------------
+    // ---- U1. Strip ARM64 stack canary boilerplate --------------------------
+    // Removes: tpidr_el0 TLS load, canary value load, and the trailing
+    // if-block that calls __stack_chk_fail on mismatch.  Declarations of the
+    // removed variables are dropped when they become unused.
+    std::string result = strip_stack_canary(pseudocode);
+
+    // ---- U2. Rename the return accumulator to "ret" ------------------------
+    // Any generic iVarN / xVarN that appears exclusively in "return <var>;"
+    // is renamed to the idiomatic name "ret".
+    result = rename_return_var(result);
+
+    // -----------------------------------------------------------------------
+    // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
+    // -----------------------------------------------------------------------
+    if (kind == JniKind::NONE) return result;
+
+    std::vector<std::string> lines = split_lines(result);
+
+    // ---- J1. Fix the function signature line -------------------------------
     size_t sig_idx = find_sig_line(lines, func_name);
     if (sig_idx < lines.size()) {
         std::string& sig = lines[sig_idx];
@@ -1092,17 +1365,17 @@ std::string jni_annotate(const std::string& func_name,
             size_t close = sig.rfind(')');
             std::string suffix = (close != std::string::npos)
                                      ? sig.substr(close + 1) : "";
-            const char* ret = (kind == JniKind::ON_LOAD) ? "jint" : "void";
-            const char* nm  = (kind == JniKind::ON_LOAD) ? "JNI_OnLoad" : "JNI_OnUnload";
-            sig = indent + ret + " " + nm + "(JavaVM *vm, void *reserved)" + suffix;
+            const char* rtype = (kind == JniKind::ON_LOAD) ? "jint" : "void";
+            const char* nm    = (kind == JniKind::ON_LOAD) ? "JNI_OnLoad" : "JNI_OnUnload";
+            sig = indent + rtype + " " + nm + "(JavaVM *vm, void *reserved)" + suffix;
         } else {
             sig = replace_param_in_sig(sig, "param_1", "JNIEnv *env");
             sig = replace_param_in_sig(sig, "param_2", "jobject thiz");
         }
     }
 
-    // ---- 2. Rename param identifiers throughout the body -------------------
-    std::string result = join_lines(lines);
+    // ---- J2. Rename param identifiers throughout the body ------------------
+    result = join_lines(lines);
     if (kind == JniKind::ON_LOAD || kind == JniKind::ON_UNLOAD) {
         result = replace_ident(result, "param_1", "vm");
         result = replace_ident(result, "param_2", "reserved");
@@ -1111,21 +1384,23 @@ std::string jni_annotate(const std::string& func_name,
         result = replace_ident(result, "param_2", "thiz");
     }
 
-    // ---- 3. Resolve vtable calls -------------------------------------------
+    // ---- J3. Resolve vtable calls ------------------------------------------
     const std::string javavm_var =
         (kind == JniKind::ON_LOAD || kind == JniKind::ON_UNLOAD) ? "vm" : "";
     result = resolve_vtable_calls(result, javavm_var);
 
-    // ---- 4. Replace JNI version constants ----------------------------------
+    // ---- J4. Replace JNI version constants ---------------------------------
     result = replace_jni_constants(result);
 
-    // ---- 5. Infer local variable types, rename in body, fix declarations ---
+    // ---- J5. Infer local variable types, rename in body, fix declarations --
     // Infers types from JNI call-site patterns (FindClass→jclass, etc.),
-    // renames variables to semantic names (piStack_48→env, iVar4→cls, …)
-    // throughout the whole body, and updates the declaration types.
+    // renames variables to semantic names throughout the whole body, and
+    // updates declaration types.  The fixed backward scan now handles
+    // assignments that appear inside compound if-conditions, e.g.:
+    //   if ((ok == 0) && (cls = (*env)->FindClass(...), cls != 0))
     result = resolve_jni_locals(result);
 
-    // ---- 6. Collapse xStack JNINativeMethod patterns -----------------------
+    // ---- J6. Collapse xStack JNINativeMethod patterns ----------------------
     // Detects RegisterNatives calls using stack-local struct fields and
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
