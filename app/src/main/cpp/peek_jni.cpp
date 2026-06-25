@@ -677,7 +677,7 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     std::string tmp_path = tmp_ss.str();
 
     char* result_cstr = peek_decompile_bytes(
-        data, (size_t)fn.size, fn.name.c_str(), tmp_path.c_str(), fn.address);
+        data, (size_t)fn.size, fn.name.c_str(), tmp_path.c_str());
 
     if (!result_cstr) {
         const char* bridge_err = peek_decompile_get_last_error();
