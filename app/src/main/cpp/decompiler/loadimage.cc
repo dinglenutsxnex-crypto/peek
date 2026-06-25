@@ -76,7 +76,12 @@ string RawLoadImage::getArchType(void) const
 void RawLoadImage::adjustVma(long adjust)
 
 {
-  adjust = AddrSpace::addressToByte(adjust,spaceid->getWordSize());
+  // spaceid may be null here when called from buildLoader() — attachToSpace()
+  // is only called later in postSpecFile().  For byte-addressed spaces (like
+  // AArch64, wordsize==1) addressToByte is the identity, so defaulting to 1
+  // is correct and avoids a null-deref at spaceid->wordsize (offset 0x64).
+  uint4 ws = (spaceid != (AddrSpace *)0) ? spaceid->getWordSize() : 1;
+  adjust = AddrSpace::addressToByte(adjust, ws);
   vma += adjust;
 }
 
@@ -87,11 +92,11 @@ void RawLoadImage::loadFill(uint1 *ptr,int4 size,const Address &addr)
   uintb offset = 0;
   uintb readsize;
 
-  curaddr -= vma;		// Get relative offset of first byte
+  curaddr -= vma;               // Get relative offset of first byte
   while(size>0) {
     if (curaddr >= filesize) {
-      if (offset == 0)		// Initial address not within file
-	break;
+      if (offset == 0)          // Initial address not within file
+        break;
       memset(ptr+offset,0,size); // Fill out the rest of the buffer with 0
       return;
     }

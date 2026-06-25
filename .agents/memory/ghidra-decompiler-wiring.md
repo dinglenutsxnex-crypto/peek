@@ -21,8 +21,17 @@ Each `nativeDecompileFunction` call:
 2. Re-parses the ELF from `ctx->file_path` (AnalysisContext doesn't keep ELF data in RAM).
 3. Extracts function bytes via `va_to_ptr` (executable sections only).
 4. Writes bytes to `filesDir/decomp_<funcId>.bin` (unique per func, cleaned up after).
-5. `new RawBinaryArchitecture(tmpPath, "AARCH64:LE:64:v8A", &nullStream)` → `init` → `addFunction(Address(ram,0))` → `followFlow` → `allacts.perform` → `print->docFunction` → `delete arch`.
+5. `new RawBinaryArchitecture` → set `adjustvma = real_func_addr` → `init` → `addFunction(Address(ram, real_func_addr))` → `followFlow(baddr, eaddr)` → `allacts.perform` → `print->docFunction` → `delete arch`.
 6. Stores result in `functions.pseudocode` and returns.
+
+## CRITICAL: RawLoadImage::adjustVma null-deref bug (SIGSEGV at 0x64)
+Setting `arch->adjustvma` (non-zero) causes `buildLoader()` to call `ldr->adjustVma()`.
+Inside `adjustVma()`, `spaceid->getWordSize()` is called — but `spaceid` is **null** at that point.
+`spaceid` is only set later via `attachToSpace()` in `postSpecFile()`.
+`wordsize` is at offset **0x64** in `AddrSpace`, so `nullptr->wordsize` → SIGSEGV at 0x64.
+
+**Fix:** `loadimage.cc RawLoadImage::adjustVma()` — guard: `uint4 ws = spaceid ? spaceid->getWordSize() : 1;`
+For AArch64 wordsize==1 anyway, so this is always correct. Do NOT remove this guard.
 
 ## SLEIGH spec assets
 Four files extracted from Android assets to `filesDir/decompiler_spec/` on first launch:
