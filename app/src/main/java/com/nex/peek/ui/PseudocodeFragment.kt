@@ -14,6 +14,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.fragment.app.activityViewModels
 import androidx.lifecycle.lifecycleScope
+import com.nex.peek.BuildConfig
 import com.nex.peek.PeekNative
 import com.nex.peek.R
 import com.nex.peek.databinding.FragmentPseudocodeBinding
@@ -54,12 +55,21 @@ class PseudocodeFragment : Fragment() {
 
         lifecycleScope.launch {
             val handle = AnalysisSession.get()
-            val code = withContext(Dispatchers.IO) {
-                PeekNative.decompileFunction(handle, fn.id)
+            var code = ""
+            var failReason = ""
+            withContext(Dispatchers.IO) {
+                code = PeekNative.decompileFunction(handle, fn.id)
+                if (code.isEmpty() && BuildConfig.DEBUG) {
+                    failReason = PeekNative.getLastError(handle)
+                }
             }
             b.progressBar.visibility = View.GONE
             if (code.isEmpty()) {
-                b.tvEmpty.text = "Decompilation unavailable"
+                if (BuildConfig.DEBUG && failReason.isNotEmpty()) {
+                    b.tvEmpty.text = "Decompilation failed\n\n$failReason"
+                } else {
+                    b.tvEmpty.text = "Decompilation unavailable"
+                }
                 b.tvEmpty.visibility = View.VISIBLE
             } else {
                 b.tvPseudocode.text = code

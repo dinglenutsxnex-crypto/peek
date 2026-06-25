@@ -680,7 +680,11 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         data, (size_t)fn.size, fn.name.c_str(), tmp_path.c_str());
 
     if (!result_cstr) {
-        LOGE("Decompile returned null for %s", fn.name.c_str());
+        const char* bridge_err = peek_decompile_get_last_error();
+        LOGE("Decompile returned null for %s — %s", fn.name.c_str(), bridge_err);
+        // Store the stage-specific error so the UI can surface it in debug builds
+        // via nativeGetLastError().
+        ctx->last_error = bridge_err ? bridge_err : "decompile bridge returned null";
         return env->NewStringUTF("");
     }
 
