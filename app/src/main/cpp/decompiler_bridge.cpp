@@ -113,6 +113,31 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
         }
 
         AddrSpace* ram = arch->getDefaultCodeSpace();
+        if (!ram) {
+            delete arch;
+            std::remove(tmp_path);
+            return fail("[S2:getDefaultCodeSpace]", func_name,
+                         "default code space is null after init()");
+        }
+
+        // Guard against real_func_addr + len overflowing or landing outside
+        // what this address space can represent — constructing an Address
+        // with an out-of-range offset is not bounds-checked by Ghidra's
+        // Address class itself, so an invalid value here can silently
+        // corrupt state or crash later (e.g. inside followFlow) rather than
+        // throwing a catchable exception at construction time.
+        uintb highest = ram->getHighest();
+        if ((uintb)real_func_addr > highest ||
+            (len > 0 && (uintb)(real_func_addr + len - 1) > highest)) {
+            delete arch;
+            std::remove(tmp_path);
+            std::ostringstream oss;
+            oss << "function range [0x" << std::hex << real_func_addr
+                << ", 0x" << (real_func_addr + len - 1)
+                << "] exceeds address space highest 0x" << highest;
+            return fail("[S3:range_check]", func_name, oss.str().c_str());
+        }
+
         // adjustvma maps file byte 0 → real_func_addr in the address space,
         // so funcAddr, baddr and eaddr must all be in terms of the real VA.
         Address funcAddr(ram, (uintb)real_func_addr);
