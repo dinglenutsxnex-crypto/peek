@@ -1,7 +1,8 @@
 #include "jni_annotator.h"
 
 #include <cctype>
-#include <cstdlib>   // strtoull
+#include <cstdio>    // snprintf
+#include <cstdlib>   // strtoull, atoi
 #include <cstring>   // strlen
 #include <map>
 #include <sstream>
@@ -632,48 +633,419 @@ static std::map<std::string,std::string> infer_local_types(
 //   "  int8 iVar4;"     "  int8 *piStack_48;"    "  xunknown4 xVar3;"
 // New type replaces the old type token.  Pointer stars are dropped because
 // the JNI types already encode pointer-ness (jclass, JNIEnv *, …).
-static std::string fix_decl_type(const std::string& line,
-                                  const std::map<std::string,std::string>& tm) {
+// 'tm' maps CURRENT var name → new JNI type string.
+// 'renamed' maps CURRENT var name → new semantic var name (may equal current).
+static std::string fix_decl_line(const std::string& line,
+                                   const std::map<std::string,std::string>& tm,
+                                   const std::map<std::string,std::string>& renamed,
+                                   bool remove_if_collapsed) {
     if (line.empty() || (line[0]!=' ' && line[0]!='\t')) return line;
     size_t p = 0;
     while (p < line.size() && (line[p]==' '||line[p]=='\t')) ++p;
     size_t type_start = p;
-    // Type token: word chars
     while (p < line.size() && (std::isalnum((unsigned char)line[p])||line[p]=='_')) ++p;
     if (p == type_start) return line;
-    size_t type_end = p;
-    // Skip spaces and pointer stars between type and var name
     while (p < line.size() && (line[p]==' '||line[p]=='\t'||line[p]=='*')) ++p;
     size_t var_start = p;
     while (p < line.size() && (std::isalnum((unsigned char)line[p])||line[p]=='_')) ++p;
     if (p == var_start) return line;
     std::string var(line, var_start, p - var_start);
-    // Must end with ';' (or '[' for arrays)
     size_t q = p;
     while (q < line.size() && (line[q]==' '||line[q]=='\t')) ++q;
     if (q >= line.size() || (line[q]!=';' && line[q]!='[')) return line;
 
-    auto it = tm.find(var);
-    if (it == tm.end()) return line;
+    // Drop declaration entirely if this var will be collapsed into a struct.
+    if (remove_if_collapsed && renamed.count(var) && renamed.at(var).empty())
+        return "";
+
+    auto type_it = tm.find(var);
+    if (type_it == tm.end()) return line;
+
+    // Use renamed var name if available, else keep original.
+    auto name_it = renamed.find(var);
+    const std::string& new_var = (name_it != renamed.end() && !name_it->second.empty())
+                                     ? name_it->second : var;
 
     std::string leading(line, 0, type_start);
-    std::string rest(line, p, std::string::npos);  // from var_name onward
-    // If new type already ends with space or '*', no extra space needed.
-    const std::string& nt = it->second;
+    std::string suffix(line, p, std::string::npos); // ';' onward (after old var name)
+    const std::string& nt = type_it->second;
     bool needs_space = !nt.empty() && nt.back() != ' ' && nt.back() != '*';
-    return leading + nt + (needs_space ? " " : "") + rest;
+    return leading + nt + (needs_space ? " " : "") + new_var + suffix;
 }
 
-// Entry point: infer local types and fix declarations.
+// ---------------------------------------------------------------------------
+// Semantic rename assignment
+// ---------------------------------------------------------------------------
+
+// Returns true if 'name' appears as a whole identifier in 'code'.
+static bool ident_exists(const std::string& code, const std::string& name) {
+    const size_t n = name.size();
+    size_t pos = 0;
+    while (pos < code.size()) {
+        size_t f = code.find(name, pos);
+        if (f == std::string::npos) return false;
+        bool lo = (f == 0)          || !is_id(code[f-1]);
+        bool ro = (f+n >= code.size()) || !is_id(code[f+n]);
+        if (lo && ro) return true;
+        pos = f + 1;
+    }
+    return false;
+}
+
+// Assign semantic names: JNIEnv*→env, jclass→cls, jmethodID→mid, …
+// Returns {old_name → new_semantic_name}.  If unchanged, new == old.
+static std::map<std::string,std::string> build_rename_map(
+        const std::map<std::string,std::string>& tm,
+        const std::string& code) {
+    std::map<std::string,std::string> rename;
+    int cls_n=0, mid_n=0, fid_n=0, obj_n=0, jstr_n=0, exc_n=0;
+
+    auto next_name = [&](const char* base, int& cnt) -> std::string {
+        cnt++;
+        if (cnt == 1) return base;
+        char buf[32];
+        std::snprintf(buf, sizeof(buf), "%s%d", base, cnt);
+        return buf;
+    };
+
+    for (const auto& kv : tm) {
+        const std::string& old_name = kv.first;
+        const std::string& type     = kv.second;
+        std::string new_name;
+
+        if (type == "JNIEnv *") {
+            new_name = "env";
+        } else if (type == "jclass") {
+            new_name = next_name("cls", cls_n);
+        } else if (type == "jmethodID") {
+            new_name = next_name("mid", mid_n);
+        } else if (type == "jfieldID") {
+            new_name = next_name("fid", fid_n);
+        } else if (type == "jstring") {
+            new_name = next_name("jstr", jstr_n);
+        } else if (type == "jobject") {
+            new_name = next_name("obj", obj_n);
+        } else if (type == "jthrowable") {
+            new_name = next_name("exc", exc_n);
+        } else {
+            rename[old_name] = old_name; // no rename for jint/jboolean/jsize
+            continue;
+        }
+
+        // Avoid clobbering a name that is already used for something else.
+        if (new_name != old_name && ident_exists(code, new_name))
+            rename[old_name] = old_name;
+        else
+            rename[old_name] = new_name;
+    }
+    return rename;
+}
+
+// Entry point: infer JNI local types, rename in body and fix declarations.
 static std::string resolve_jni_locals(const std::string& code) {
     std::vector<std::string> lines = split_lines(code);
     auto tm = infer_local_types(lines);
     if (tm.empty()) return code;
-    std::string result;
-    result.reserve(code.size());
+
+    // Build semantic rename map and apply renames to the whole body first.
+    auto rename = build_rename_map(tm, code);
+    std::string result = code;
+    for (const auto& kv : rename) {
+        if (kv.first != kv.second && !kv.second.empty())
+            result = replace_ident(result, kv.first, kv.second);
+    }
+
+    // Fix declaration types (variable names in declarations are now renamed).
+    // Build a type map keyed by NEW names so fix_decl_line can look them up.
+    std::map<std::string,std::string> tm_new;
+    std::map<std::string,std::string> rename_new; // new_name → new_name (identity)
+    for (const auto& kv : tm) {
+        const std::string& new_name = rename.count(kv.first) ? rename.at(kv.first) : kv.first;
+        if (!new_name.empty()) {
+            tm_new[new_name] = kv.second;
+            rename_new[new_name] = new_name;
+        }
+    }
+
+    std::vector<std::string> lines2 = split_lines(result);
+    std::string out;
+    out.reserve(result.size());
+    for (size_t i = 0; i < lines2.size(); ++i) {
+        if (i) out += '\n';
+        std::string fixed = fix_decl_line(lines2[i], tm_new, rename_new, false);
+        out += fixed;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// JNINativeMethod struct collapse
+//
+// Detects the pattern:
+//   xStack_40 = "name";
+//   xStack_38 = "signature";
+//   xStack_30 = <fnptr>;
+//   RegisterNatives(env, cls, &xStack_40, 1);
+//
+// and replaces it with:
+//   JNINativeMethod methods[] = {{"name", "signature", <fnptr>}};
+//   RegisterNatives(env, cls, methods, 1);
+//
+// Ghidra xStack_NN variables use hex suffixes where lower NN = higher memory
+// address: sig is at xStack_{N-8} and fnPtr at xStack_{N-16} from the name
+// var, because each 8-byte LE decrease in the frame-pointer offset corresponds
+// to +8 in the actual array memory layout.
+// ---------------------------------------------------------------------------
+
+// Parse the hex numeric suffix from an xStack_NN variable name.
+// Returns false if the name doesn't match.
+static bool parse_xstack_index(const std::string& name, uint64_t& out) {
+    static const char PFX[] = "xStack_";
+    static const size_t PLEN = 7;
+    if (name.size() <= PLEN) return false;
+    if (name.compare(0, PLEN, PFX) != 0) return false;
+    const char* p = name.c_str() + PLEN;
+    if (!std::isxdigit((unsigned char)*p)) return false;
+    char* end;
+    out = std::strtoull(p, &end, 16);
+    return *end == '\0';
+}
+
+// Format an xStack variable name from a hex index.
+static std::string xstack_name(uint64_t idx) {
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "xStack_%llx",
+                  (unsigned long long)idx);
+    return buf;
+}
+
+// Find the LAST assignment `<var> = <value>;` in lines.
+// Returns the line index and extracts the value string (trimmed, no semicolon).
+static bool find_last_assignment(const std::vector<std::string>& lines,
+                                  const std::string& var,
+                                  size_t& line_idx_out,
+                                  std::string& value_out) {
+    const size_t vlen = var.size();
+    bool found = false;
     for (size_t i = 0; i < lines.size(); ++i) {
-        if (i) result += '\n';
-        result += fix_decl_type(lines[i], tm);
+        const std::string& l = lines[i];
+        size_t p = 0;
+        while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+        if (l.compare(p, vlen, var) != 0) continue;
+        p += vlen;
+        while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+        if (p >= l.size() || l[p] != '=') continue;
+        ++p;
+        while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+        // Read value up to ';'
+        size_t val_start = p;
+        // Find closing ';' at this nesting level
+        int depth = 0;
+        while (p < l.size()) {
+            if (l[p]=='{') ++depth;
+            else if (l[p]=='}') --depth;
+            else if (l[p]==';' && depth==0) break;
+            ++p;
+        }
+        if (p >= l.size()) continue; // no ';'
+        // Trim trailing whitespace from value
+        size_t val_end = p;
+        while (val_end > val_start && (l[val_end-1]==' '||l[val_end-1]=='\t')) --val_end;
+        value_out = std::string(l, val_start, val_end - val_start);
+        line_idx_out = i;
+        found = true;
+    }
+    return found;
+}
+
+// Find and remove a simple declaration line `<any_type> <var>;`.
+static void remove_decl_line(std::vector<std::string>& lines,
+                               const std::string& var) {
+    const size_t vlen = var.size();
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const std::string& l = lines[i];
+        // Must be an indented line (declaration)
+        if (l.empty() || (l[0]!=' ' && l[0]!='\t')) continue;
+        size_t p = 0;
+        while (p < l.size() && (l[p]==' '||l[p]=='\t')) ++p;
+        // Skip type token + spaces/stars
+        while (p < l.size() && (std::isalnum((unsigned char)l[p])||l[p]=='_')) ++p;
+        while (p < l.size() && (l[p]==' '||l[p]=='\t'||l[p]=='*')) ++p;
+        if (l.compare(p, vlen, var) != 0) continue;
+        p += vlen;
+        size_t q = p;
+        while (q < l.size() && (l[q]==' '||l[q]=='\t')) ++q;
+        if (q >= l.size() || l[q] != ';') continue;
+        lines[i] = ""; // blank the line (will be stripped on join)
+    }
+}
+
+static std::string collapse_native_methods(const std::string& code) {
+    // Find `->RegisterNatives(` in the code.
+    const char REGNATIVES[] = "->RegisterNatives(";
+    const size_t RGNLEN     = sizeof(REGNATIVES) - 1;
+
+    std::string result = code;
+
+    // We may have multiple RegisterNatives calls; loop until no more matches.
+    for (;;) {
+        size_t rg = result.find(REGNATIVES);
+        if (rg == std::string::npos) break;
+
+        // Parse RegisterNatives args: (env, cls, &struct_var, count)
+        size_t arg_start = rg + RGNLEN;
+
+        // Skip first two args (env, cls) — just scan past them
+        size_t p = arg_start;
+        // Arg 0 (env)
+        { int d=0;
+          while (p < result.size() && !(d==0 && result[p]==',')) {
+              if(result[p]=='(') ++d; else if(result[p]==')') { if(d--==0) break; } ++p; }
+          if (p >= result.size() || result[p]!=',') break; ++p;
+          while (p < result.size() && result[p]==' ') ++p; }
+        // Arg 1 (cls)
+        { int d=0;
+          while (p < result.size() && !(d==0 && result[p]==',')) {
+              if(result[p]=='(') ++d; else if(result[p]==')') { if(d--==0) break; } ++p; }
+          if (p >= result.size() || result[p]!=',') break; ++p;
+          while (p < result.size() && result[p]==' ') ++p; }
+
+        // Arg 2: &struct_var
+        if (p >= result.size() || result[p] != '&') break;
+        ++p;
+        size_t sv_start = p;
+        while (p < result.size() && (std::isalnum((unsigned char)result[p])||result[p]=='_')) ++p;
+        std::string struct_var(result, sv_start, p - sv_start);
+
+        uint64_t base_idx;
+        if (!parse_xstack_index(struct_var, base_idx)) break;
+
+        // Arg 3: count literal (skip comma + spaces)
+        while (p < result.size() && (result[p]==' '||result[p]==',')) ++p;
+        size_t count_start = p;
+        while (p < result.size() && std::isdigit((unsigned char)result[p])) ++p;
+        if (p == count_start) break; // no count literal
+        int count = std::atoi(std::string(result, count_start, p - count_start).c_str());
+        if (count <= 0 || count > 64) break; // sanity check
+
+        // Collect JNINativeMethod fields for each element.
+        struct NMEntry { std::string name_val, sig_val, fnptr_val; };
+        std::vector<NMEntry> entries;
+        bool ok = true;
+
+        // Gather lines for manipulation
+        std::vector<std::string> lines = split_lines(result);
+        std::vector<size_t> lines_to_blank; // assignment lines to remove
+
+        for (int i = 0; i < count && ok; ++i) {
+            // Element i:
+            // name_var   at base_idx + i*0x18  (= base + 0 for i=0)
+            // sig_var    at base_idx - 8 + i*0x18... wait — need the right formula.
+            // From the observed pattern (xStack_40=name, xStack_38=sig, xStack_30=fnPtr):
+            // As i increases, all three indices also increase (less negative offset).
+            // sig_idx   = name_idx - 8
+            // fnptr_idx = name_idx - 16
+            // elem i name_idx = base_idx - i * 0x18  (decreasing for i>0? No...)
+            // Actually elem 0 name = base_idx; subsequent elements have LARGER base_idx
+            // because they are at higher absolute addresses → smaller FP-relative offsets.
+            // Wait: higher absolute addr → smaller xStack index.
+            // For i=0: name at base_idx (e.g., 0x40)
+            // For i=1: name at base_idx - 0x18 (e.g., 0x28)  ← one struct-size down the stack
+            uint64_t name_idx   = base_idx - (uint64_t)i * 0x18;
+            uint64_t sig_idx_v  = name_idx - 8;
+            uint64_t fnptr_idx  = name_idx - 16;
+
+            std::string nv = xstack_name(name_idx);
+            std::string sv = xstack_name(sig_idx_v);
+            std::string fv = xstack_name(fnptr_idx);
+
+            NMEntry e;
+            size_t li;
+            if (!find_last_assignment(lines, nv, li, e.name_val))  { ok=false; break; }
+            lines_to_blank.push_back(li);
+            if (!find_last_assignment(lines, sv, li, e.sig_val))   { ok=false; break; }
+            lines_to_blank.push_back(li);
+            if (!find_last_assignment(lines, fv, li, e.fnptr_val)) { ok=false; break; }
+            lines_to_blank.push_back(li);
+
+            entries.push_back(e);
+        }
+        if (!ok || entries.empty()) break;
+
+        // All found — blank the assignment lines
+        for (size_t li : lines_to_blank) lines[li] = "";
+
+        // Remove xStack declarations from the header block
+        for (int i = 0; i < count; ++i) {
+            uint64_t name_idx  = base_idx - (uint64_t)i * 0x18;
+            remove_decl_line(lines, xstack_name(name_idx));
+            remove_decl_line(lines, xstack_name(name_idx - 8));
+            remove_decl_line(lines, xstack_name(name_idx - 16));
+        }
+
+        // Build JNINativeMethod initializer string.
+        // Determine indent from the RegisterNatives line.
+        size_t rg_line = std::string::npos;
+        for (size_t i = 0; i < lines.size(); ++i)
+            if (lines[i].find("->RegisterNatives(") != std::string::npos)
+                { rg_line = i; break; }
+
+        std::string indent = "    ";
+        if (rg_line != std::string::npos) {
+            size_t qi = 0;
+            while (qi < lines[rg_line].size() &&
+                   (lines[rg_line][qi]==' '||lines[rg_line][qi]=='\t')) ++qi;
+            indent = std::string(lines[rg_line], 0, qi);
+        }
+
+        // Generate:  JNINativeMethod methods[] = { {"n","s",fn}, ... };
+        std::string decl = indent + "JNINativeMethod methods[] = {";
+        for (size_t i = 0; i < entries.size(); ++i) {
+            if (i) decl += ",";
+            decl += "{" + entries[i].name_val + ", " +
+                          entries[i].sig_val  + ", " +
+                          entries[i].fnptr_val + "}";
+        }
+        decl += "};";
+
+        // Insert the decl just before the RegisterNatives line
+        if (rg_line != std::string::npos)
+            lines.insert(lines.begin() + (ptrdiff_t)rg_line, decl);
+        // rg_line is now one past the decl (since we inserted above it)
+
+        // Rewrite the RegisterNatives call: replace `&struct_var, count_literal`
+        // with `methods, count`.
+        char count_str[16];
+        std::snprintf(count_str, sizeof(count_str), "%d", count);
+        // Rebuild the result from lines, then do a targeted string replace.
+        result = join_lines(lines);
+
+        // Replace `&<struct_var>, <count_literal>)` with `methods, <count>)`
+        // in the reconstructed text.
+        std::string old_ref = "&" + struct_var + ", " + count_str + ")";
+        std::string new_ref = std::string("methods, ") + count_str + ")";
+        {
+            size_t pos = result.find(old_ref);
+            if (pos != std::string::npos)
+                result.replace(pos, old_ref.size(), new_ref);
+        }
+
+        // Remove consecutive blank lines (left by blanked assignment lines)
+        {
+            std::string cleaned;
+            cleaned.reserve(result.size());
+            bool prev_blank = false;
+            for (char c : result) {
+                if (c == '\n') {
+                    if (!prev_blank) cleaned += c;
+                    prev_blank = true;
+                } else {
+                    prev_blank = false;
+                    cleaned += c;
+                }
+            }
+            result = std::move(cleaned);
+        }
     }
     return result;
 }
@@ -699,9 +1071,8 @@ static JniKind detect_kind(const std::string& name) {
 // ---------------------------------------------------------------------------
 
 // Cache version tag — prepended to stored pseudocode so stale entries
-// (from before vtable/string resolution was added) are auto-invalidated.
-// Must NOT contain characters that appear in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V4\x01\n";
+// are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V5\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -741,8 +1112,6 @@ std::string jni_annotate(const std::string& func_name,
     }
 
     // ---- 3. Resolve vtable calls -------------------------------------------
-    // For JNI_OnLoad/Unload: "vm" is JavaVM*, everything else is JNIEnv*.
-    // For Java_*: no JavaVM calls expected; all vtable calls are JNIEnv*.
     const std::string javavm_var =
         (kind == JniKind::ON_LOAD || kind == JniKind::ON_UNLOAD) ? "vm" : "";
     result = resolve_vtable_calls(result, javavm_var);
@@ -750,11 +1119,16 @@ std::string jni_annotate(const std::string& func_name,
     // ---- 4. Replace JNI version constants ----------------------------------
     result = replace_jni_constants(result);
 
-    // ---- 5. Infer local variable types from JNI call sites -----------------
-    // Scans for `var = (*env)->FindClass(...)` patterns and fixes the
-    // Ghidra-generated declarations (e.g. "int8 iVar4;" → "jclass iVar4;").
-    // Also retyping GetEnv output arg to "JNIEnv *<var>;".
+    // ---- 5. Infer local variable types, rename in body, fix declarations ---
+    // Infers types from JNI call-site patterns (FindClass→jclass, etc.),
+    // renames variables to semantic names (piStack_48→env, iVar4→cls, …)
+    // throughout the whole body, and updates the declaration types.
     result = resolve_jni_locals(result);
+
+    // ---- 6. Collapse xStack JNINativeMethod patterns -----------------------
+    // Detects RegisterNatives calls using stack-local struct fields and
+    // rewrites them to a proper JNINativeMethod array declaration.
+    result = collapse_native_methods(result);
 
     return result;
 }
