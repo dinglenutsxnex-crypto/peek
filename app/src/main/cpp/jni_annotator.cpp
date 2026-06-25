@@ -1255,6 +1255,8 @@ static std::string resolve_xunknown_types(const std::string& code) {
 // Applies to every function, JNI or not, after all other passes have fired.
 // ---------------------------------------------------------------------------
 
+static bool is_generic_varname(const std::string& name);
+
 static std::string rename_generic_vars(const std::string& code) {
     // --- collect generic vars from declaration lines -----------------------
     // A declaration line looks like (leading whitespace required):
