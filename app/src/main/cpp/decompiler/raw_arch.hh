@@ -23,14 +23,14 @@
 
 namespace ghidra {
 
-extern ElementId ELEM_RAW_SAVEFILE;	///< Marshaling element \<raw_savefile>
+extern ElementId ELEM_RAW_SAVEFILE;     ///< Marshaling element \<raw_savefile>
 
 /// \brief Extension point for building an Architecture that reads in raw images
 class RawBinaryArchitectureCapability : public ArchitectureCapability {
-  static RawBinaryArchitectureCapability rawBinaryArchitectureCapability;	///< The singleton instance
-  RawBinaryArchitectureCapability(void);					///< Singleton
-  RawBinaryArchitectureCapability(const RawBinaryArchitectureCapability &op2);	///< Not implemented
-  RawBinaryArchitectureCapability &operator=(const RawBinaryArchitectureCapability &op2);	///< Not implemented
+  static RawBinaryArchitectureCapability rawBinaryArchitectureCapability;       ///< The singleton instance
+  RawBinaryArchitectureCapability(void);                                        ///< Singleton
+  RawBinaryArchitectureCapability(const RawBinaryArchitectureCapability &op2);  ///< Not implemented
+  RawBinaryArchitectureCapability &operator=(const RawBinaryArchitectureCapability &op2);       ///< Not implemented
 public:
   virtual ~RawBinaryArchitectureCapability(void);
   virtual Architecture *buildArchitecture(const string &filename,const string &target,ostream *estream);
@@ -40,14 +40,14 @@ public:
 
 /// \brief Architecture that reads its binary as a raw file
 class RawBinaryArchitecture : public SleighArchitecture {
-  long adjustvma;					///< What address byte 0 of the raw file gets treated as
   virtual void buildLoader(DocumentStorage &store);
   virtual void resolveArchitecture(void);
   virtual void postSpecFile(void);
 public:
+  long adjustvma;                                       ///< What address byte 0 of the raw file gets treated as; set before init()
   virtual void encode(Encoder &encoder) const;
   virtual void restoreXml(DocumentStorage &store);
-  RawBinaryArchitecture(const string &fname,const string &targ,ostream *estream);	///< Constructor
+  RawBinaryArchitecture(const string &fname,const string &targ,ostream *estream);       ///< Constructor
   virtual ~RawBinaryArchitecture(void) {}
 };
 

@@ -19,17 +19,23 @@ using namespace ghidra;
 
 // ----------------------------------------------------------------
 // Run one function through the full pipeline and return pseudocode.
-// binPath  – raw binary file (bytes starting at virtual offset 0)
-// funcName – name to assign the function
-// specdir  – directory containing AARCH64.ldefs etc.
+// binPath      – raw binary file containing exactly the function's bytes
+// funcName     – name to assign the function
+// specdir      – directory containing AARCH64.ldefs etc.
+// realFuncAddr – the function's real VA in the original binary; the
+//                loader maps file byte 0 to this address so that
+//                PC-relative branch targets resolve correctly.
+//                Pass 0 for self-contained test functions.
 // ----------------------------------------------------------------
 static std::string decompileFunction(const char *binPath,
                                      const char *funcName,
-                                     const char *specdir)
+                                     const char *specdir,
+                                     uint64_t realFuncAddr = 0)
 {
     DocumentStorage store;
     RawBinaryArchitecture *arch =
         new RawBinaryArchitecture(binPath, "AARCH64:LE:64:v8A", &std::cerr);
+    arch->adjustvma = (long)realFuncAddr;
 
     try {
         arch->init(store);
@@ -40,7 +46,7 @@ static std::string decompileFunction(const char *binPath,
     }
 
     AddrSpace *ramSpace = arch->getDefaultCodeSpace();
-    Address funcAddr(ramSpace, 0);
+    Address funcAddr(ramSpace, (uintb)realFuncAddr);
 
     Funcdata *fd = arch->symboltab->getGlobalScope()
                        ->addFunction(funcAddr, funcName)
@@ -51,9 +57,19 @@ static std::string decompileFunction(const char *binPath,
         return "";
     }
 
+    // Determine function size from file length to set the upper bound.
+    // followFlow must be clamped to [realFuncAddr, realFuncAddr+size-1] so
+    // that calls to external addresses are treated as non-followed call
+    // edges rather than causing disassembly of unmapped space.
+    std::ifstream probe(binPath, std::ios::binary | std::ios::ate);
+    size_t funcSize = probe.is_open() ? (size_t)probe.tellg() : 0;
+    probe.close();
+    uintb endOff = funcSize > 0 ? (uintb)(realFuncAddr + funcSize - 1)
+                                : ramSpace->getHighest();
+
     try {
-        Address baddr(ramSpace, 0);
-        Address eaddr(ramSpace, ramSpace->getHighest());
+        Address baddr(ramSpace, (uintb)realFuncAddr);
+        Address eaddr(ramSpace, endOff);
         fd->followFlow(baddr, eaddr);
     } catch (const LowlevelError &e) {
         std::cerr << "followFlow failed: " << e.explain << "\n";

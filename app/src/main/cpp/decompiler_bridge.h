@@ -15,7 +15,8 @@ int   peek_decompiler_init(const char* spec_dir);
  * thread.
  */
 char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
-                            const char* func_name, const char* tmp_path);
+                            const char* func_name, const char* tmp_path,
+                            uint64_t real_func_addr);
 
 /*
  * Returns the last error set by peek_decompile_bytes on this thread.
