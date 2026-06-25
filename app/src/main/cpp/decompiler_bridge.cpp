@@ -173,12 +173,20 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
 
             Address baddr(ram, (uintb)real_func_addr);
             Address eaddr(ram, (uintb)(real_func_addr + len - 1));
+            LOGI_B("[S3] followFlow baddr=0x%llx eaddr=0x%llx for %s",
+                   (unsigned long long)real_func_addr,
+                   (unsigned long long)(real_func_addr + len - 1),
+                   func_name);
             fd->followFlow(baddr, eaddr);
             LOGI_B("[S3] followFlow OK for %s", func_name);
         } catch (const LowlevelError& e) {
             delete arch;
             std::remove(tmp_path);
-            return fail("[S3:followFlow]", func_name, e.explain.c_str());
+            std::ostringstream detail;
+            detail << e.explain
+                   << " [func=0x" << std::hex << real_func_addr
+                   << "+0x" << len << "]";
+            return fail("[S3:followFlow]", func_name, detail.str().c_str());
         } catch (const std::exception& e) {
             delete arch;
             std::remove(tmp_path);

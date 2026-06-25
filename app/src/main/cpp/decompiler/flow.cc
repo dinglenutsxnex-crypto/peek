@@ -103,7 +103,10 @@ PcodeOp *FlowInfo::fallthruOp(PcodeOp *op) const
   --miter;
   if ((*miter).first + (*miter).second.size <= op->getAddr())
     return (PcodeOp *)0;
-  return target( (*miter).first + (*miter).second.size);
+  Address nxt = (*miter).first + (*miter).second.size;
+  if ((nxt < baddr)||(eaddr < nxt))
+    return (PcodeOp *)0;      // fallthrough is out of function bounds
+  return target(nxt);
 }
 
 /// The first p-code op associated with the machine instruction at the
@@ -948,10 +951,12 @@ void FlowInfo::collectEdges(void)
       break;
     case CPUI_CBRANCH:
       targ_op = fallthruOp(op); // Put in fallthru edge
-      block_edge1.push_back(op);
-      block_edge2.push_back(targ_op);
+      if (targ_op != (PcodeOp *)0) {   // nullptr means fallthru out of bounds
+        block_edge1.push_back(op);
+        block_edge2.push_back(targ_op);
+      }
       targ_op = branchTarget(op);
-      if (targ_op != (PcodeOp *)0) {   // nullptr means out-of-bounds target
+      if (targ_op != (PcodeOp *)0) {   // nullptr means branch target out of bounds
         block_edge1.push_back(op);
         block_edge2.push_back(targ_op);
       }
@@ -959,8 +964,10 @@ void FlowInfo::collectEdges(void)
     default:
       if (nextstart) {          // Put in fallthru edge if new basic block
         targ_op = fallthruOp(op);
-        block_edge1.push_back(op);
-        block_edge2.push_back(targ_op);
+        if (targ_op != (PcodeOp *)0) {   // nullptr means fallthru out of bounds
+          block_edge1.push_back(op);
+          block_edge2.push_back(targ_op);
+        }
       }
       break;
     }
