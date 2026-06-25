@@ -713,7 +713,7 @@ static std::map<std::string,std::string> build_rename_map(
         const std::map<std::string,std::string>& tm,
         const std::string& code) {
     std::map<std::string,std::string> rename;
-    int cls_n=0, mid_n=0, fid_n=0, obj_n=0, jstr_n=0, exc_n=0;
+    int cls_n=0, mid_n=0, fid_n=0, obj_n=0, jstr_n=0, exc_n=0, result_n=0;
 
     auto next_name = [&](const char* base, int& cnt) -> std::string {
         cnt++;
@@ -742,8 +742,12 @@ static std::map<std::string,std::string> build_rename_map(
             new_name = next_name("obj", obj_n);
         } else if (type == "jthrowable") {
             new_name = next_name("exc", exc_n);
+        } else if (type == "jint") {
+            // jint local vars in JNI are almost always error-code results
+            // (GetEnv, RegisterNatives, Throw, etc. return 0 on success).
+            new_name = next_name("result", result_n);
         } else {
-            rename[old_name] = old_name; // no rename for jint/jboolean/jsize
+            rename[old_name] = old_name; // no rename for jboolean/jsize
             continue;
         }
 
@@ -1035,14 +1039,22 @@ static std::string collapse_native_methods(const std::string& code) {
         // Rebuild the result from lines, then do a targeted string replace.
         result = join_lines(lines);
 
-        // Replace `&<struct_var>, <count_literal>)` with `methods, <count>)`
-        // in the reconstructed text.
-        std::string old_ref = "&" + struct_var + ", " + count_str + ")";
+        // Replace `&<struct_var>[, ]<count_literal>)` with `methods, <count>)`.
+        // Ghidra emits no space after commas, so try both forms: "var, N)" and
+        // "var,N)".  The replacement always uses ", " for consistent output.
         std::string new_ref = std::string("methods, ") + count_str + ")";
         {
-            size_t pos = result.find(old_ref);
-            if (pos != std::string::npos)
-                result.replace(pos, old_ref.size(), new_ref);
+            // Try with space first (uncommon but possible), then without.
+            std::string old_sp  = "&" + struct_var + ", " + count_str + ")";
+            std::string old_nsp = "&" + struct_var + ","  + count_str + ")";
+            size_t pos = result.find(old_sp);
+            if (pos != std::string::npos) {
+                result.replace(pos, old_sp.size(), new_ref);
+            } else {
+                pos = result.find(old_nsp);
+                if (pos != std::string::npos)
+                    result.replace(pos, old_nsp.size(), new_ref);
+            }
         }
 
         // Remove consecutive blank lines (left by blanked assignment lines)
@@ -1324,7 +1336,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V6\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V7\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {

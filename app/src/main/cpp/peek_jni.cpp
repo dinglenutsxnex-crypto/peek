@@ -154,6 +154,36 @@ static std::string elf_read_cstring(const ElfParseResult& elf,
     return (deref.size() > direct.size()) ? deref : direct;
 }
 
+// Resolve an xRam VA as a function pointer: read the 8-byte value stored at
+// `va`, then look it up in the ELF function/symbol table.  Returns the
+// function name if a named (non-generic) entry is found, else "".
+// This handles the JNINativeMethod fnPtr field, which Ghidra emits as
+// xRam<addr> when the stored pointer refers to another function in the .so.
+static std::string elf_resolve_funcptr(const ElfParseResult& elf, uint64_t va) {
+    bool ok = false;
+    uint64_t target = elf_read_u64le(elf, va, ok);
+    if (!ok || target == 0) return "";
+
+    // Named functions first (exported symbols, sub_XXXX excluded).
+    for (const auto& fn : elf.functions) {
+        if (fn.address != target) continue;
+        if (fn.name.empty()) continue;
+        // Skip Ghidra-style generic names: sub_XXXX, j_XXXX, etc.
+        if (fn.name.size() > 4 && fn.name[3] == '_' &&
+            (fn.name[0]=='s'||fn.name[0]=='j')) continue;
+        return fn.name;
+    }
+    // Also walk the raw symbol table (catches weak / local exports).
+    for (const auto& sym : elf.symbols) {
+        if (sym.address != target) continue;
+        if (sym.name.empty()) continue;
+        if (sym.name.size() > 4 && sym.name[3] == '_' &&
+            (sym.name[0]=='s'||sym.name[0]=='j')) continue;
+        return sym.name;
+    }
+    return "";
+}
+
 // Escape a C string literal for embedding in quotes in pseudocode.
 // Handles backslash and double-quote; strips embedded newlines/tabs.
 static std::string escape_for_literal(const std::string& s) {
@@ -226,13 +256,21 @@ static std::string resolve_data_refs(const std::string& code,
                 std::string(code, hex_start, 16).c_str(), nullptr, 16);
             std::string s = elf_read_cstring(elf, va);
             if (!s.empty()) {
-                // Inline replace: drop the xRam token, emit "string"
-                out.append(code, pos, f - pos); // text before xRam
+                // Address holds (or points to) a C string — emit "string".
+                out.append(code, pos, f - pos);
                 out += '"';
                 out += escape_for_literal(s);
                 out += '"';
             } else {
-                out.append(code, pos, p - pos); // keep xRam token as-is
+                // Address may hold a function pointer — try to resolve it to
+                // a symbol name (e.g. the fnPtr field of JNINativeMethod).
+                std::string fn = elf_resolve_funcptr(elf, va);
+                if (!fn.empty()) {
+                    out.append(code, pos, f - pos);
+                    out += fn;
+                } else {
+                    out.append(code, pos, p - pos); // keep xRam token as-is
+                }
             }
             pos = p;
         }
