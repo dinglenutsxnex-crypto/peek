@@ -1039,22 +1039,14 @@ static std::string collapse_native_methods(const std::string& code) {
         // Rebuild the result from lines, then do a targeted string replace.
         result = join_lines(lines);
 
-        // Replace `&<struct_var>[, ]<count_literal>)` with `methods, <count>)`.
-        // Ghidra emits no space after commas, so try both forms: "var, N)" and
-        // "var,N)".  The replacement always uses ", " for consistent output.
-        std::string new_ref = std::string("methods, ") + count_str + ")";
+        // Replace `&<struct_var>,<count_literal>)` with `methods, <count>)`.
+        // Ghidra emits no space after commas.
         {
-            // Try with space first (uncommon but possible), then without.
-            std::string old_sp  = "&" + struct_var + ", " + count_str + ")";
-            std::string old_nsp = "&" + struct_var + ","  + count_str + ")";
-            size_t pos = result.find(old_sp);
-            if (pos != std::string::npos) {
-                result.replace(pos, old_sp.size(), new_ref);
-            } else {
-                pos = result.find(old_nsp);
-                if (pos != std::string::npos)
-                    result.replace(pos, old_nsp.size(), new_ref);
-            }
+            std::string old_ref = "&" + struct_var + "," + count_str + ")";
+            std::string new_ref = std::string("methods, ") + count_str + ")";
+            size_t pos = result.find(old_ref);
+            if (pos != std::string::npos)
+                result.replace(pos, old_ref.size(), new_ref);
         }
 
         // Remove consecutive blank lines (left by blanked assignment lines)
