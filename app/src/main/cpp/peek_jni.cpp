@@ -418,31 +418,41 @@ static void exec_bounds(const ElfParseResult& elf,
     if (base == UINT64_MAX) base = 0;
 }
 
-// Scan executable sections for ARM64 function prologues:
-//   sub sp, sp, #N   followed immediately by   stp x29, x30, [sp, #M{!}]
+// Scan executable sections for ARM64 function prologues. Two idioms:
+//   (A) sub sp, sp, #N   followed immediately by   stp x29, x30, [sp, #M]
+//   (B) stp x29, x30, [sp, #-N]!   (pre-index form; folds the sp adjustment
+//       into the stp itself, so there's no separate "sub sp" instruction)
 // Any match that is not already in func_map gets added with an empty name
 // (will be auto-named sub_ADDRESS later).
 static void prologue_scan(const ElfParseResult& elf,
                            std::map<uint64_t, std::string>& func_map) {
     for (const auto& sec : elf.sections) {
-        if (!sec.is_executable() || sec.size < 8) continue;
+        if (!sec.is_executable() || sec.size < 4) continue;
         const uint8_t* base = elf.data.data() + sec.offset;
-        for (uint64_t off = 0; off + 8 <= sec.size; off += 4) {
-            uint32_t w0, w1;
-            std::memcpy(&w0, base + off,     4);
+
+        for (uint64_t off = 0; off + 4 <= sec.size; off += 4) {
+            uint32_t w0;
+            std::memcpy(&w0, base + off, 4);
+
+            // (B) stp x29, x30, [sp, #-N]! — pre-index, self-contained.
+            // Fixed register fields: Rt1=x29(29), Rn=sp(31), Rt2=x30(30) → 0x7BFD.
+            bool is_stp_preindex = (w0 & 0xFFC07FFF) == 0xA9807BFD;
+            if (is_stp_preindex) {
+                func_map.emplace(sec.address + off, "");
+                continue;
+            }
+
+            // (A) sub sp, sp, #N — must be followed by a signed-offset stp.
+            if (off + 8 > sec.size) continue;
+            uint32_t w1;
             std::memcpy(&w1, base + off + 4, 4);
 
             // sub sp, sp, #imm (64-bit): sf=1 op=1 S=0 100010 0 Rn=31 Rd=31
-            // Mask checks that Rd and Rn are both sp (reg 31).
             bool is_sub_sp = (w0 & 0xFF8003FF) == 0xD10003FF;
+            // stp x29, x30, [sp, #N] — signed-offset form.
+            bool is_stp_signed = (w1 & 0xFFC07FFF) == 0xA9007BFD;
 
-            // stp x29, x30, [sp, #N] — signed-offset or pre-index variants.
-            // Fixed register fields: Rt1=x29(29), Rn=sp(31), Rt2=x30(30) → 0x7BFD.
-            bool is_stp_fp_lr =
-                ((w1 & 0xFFC07FFF) == 0xA9007BFD) ||   // signed offset
-                ((w1 & 0xFFC07FFF) == 0xA9807BFD);     // pre-index
-
-            if (is_sub_sp && is_stp_fp_lr) {
+            if (is_sub_sp && is_stp_signed) {
                 uint64_t va = sec.address + off;
                 func_map.emplace(va, "");
             }
@@ -536,6 +546,18 @@ static bool run_analysis(AnalysisContext& ctx) {
     for (const auto& fn : elf.functions) {
         if (fn.address != 0)
             func_map[fn.address] = fn.name;
+    }
+
+    // Seed the ELF entry point (e_entry) as "start", matching IDA/Ghidra
+    // convention. The entry point is rarely covered by a symbol of its own
+    // (it's compiler-generated init code, not a named function) and nothing
+    // else in this pipeline ever looks at ehdr->e_entry, so without this it
+    // silently never appears anywhere in the function list.
+    if (elf.data.size() >= sizeof(Elf64_Ehdr)) {
+        auto* ehdr = reinterpret_cast<const Elf64_Ehdr*>(elf.data.data());
+        if (ehdr->e_entry != 0 && !func_map.count(ehdr->e_entry)) {
+            func_map[ehdr->e_entry] = "start";
+        }
     }
 
     // --- Phase 2: prologue scan ---
@@ -690,6 +712,7 @@ static bool run_analysis(AnalysisContext& ctx) {
     };
 
     for (auto& [addr, name] : func_map) {
+        if (!name.empty()) continue;   // don't override a meaningful name (e.g. "start")
         auto it = disasm_cache.find(addr);
         if (it == disasm_cache.end()) continue;
         thunk_naming_pass(addr, name, it->second);
