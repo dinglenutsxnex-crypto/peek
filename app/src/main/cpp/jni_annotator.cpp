@@ -1600,7 +1600,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V10\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V11\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1648,7 +1648,6 @@ std::string jni_annotate(const std::string& func_name,
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
     // -----------------------------------------------------------------------
     if (kind == JniKind::NONE) {
-        result = remove_writeonly_vars(result);
         return rename_generic_vars(result);
     }
 
@@ -1705,8 +1704,7 @@ std::string jni_annotate(const std::string& func_name,
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
 
-    // ---- U3. Remove write-only dead variables, then rename survivors --------
-    result = remove_writeonly_vars(result);
+    // ---- U3. Rename surviving generic vars (JNI functions) -----------------
     result = rename_generic_vars(result);
 
     return result;
