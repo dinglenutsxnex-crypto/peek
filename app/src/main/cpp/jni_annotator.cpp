@@ -6,6 +6,7 @@
 #include <cstring>   // strlen
 #include <map>
 #include <sstream>
+#include <unordered_map>
 #include <vector>
 
 // ---------------------------------------------------------------------------
@@ -390,6 +391,53 @@ static const char* lookup_vtable(const VtableEntry* table, size_t n, uint64_t of
 // ---------------------------------------------------------------------------
 // Vtable call resolution
 //
+// Scan pseudocode for (**(code **)(*VAR + 0xOFF)) patterns where OFF matches
+// a known JNIEnv table entry.  Returns the variable name that appears most
+// often in such patterns, or "" if no JNI vtable call is found.
+// Used to detect JNI dispatch inside non-JNI-named functions.
+static std::string detect_jni_env_var(const std::string& text) {
+    static const char PREFIX[] = "(**(code **)(*";
+    static const char MID[]    = " + 0x";
+    static const size_t PLEN   = sizeof(PREFIX) - 1;
+    static const size_t MLEN   = sizeof(MID)    - 1;
+
+    std::unordered_map<std::string, int> counts;
+    size_t pos = 0;
+    while (pos < text.size()) {
+        size_t found = text.find(PREFIX, pos);
+        if (found == std::string::npos) break;
+        size_t p = found + PLEN;
+
+        size_t vs = p;
+        while (p < text.size() && is_id(text[p])) ++p;
+        if (p == vs) { pos = found + 1; continue; }
+        std::string var(text, vs, p - vs);
+
+        if (text.compare(p, MLEN, MID) != 0) { pos = found + 1; continue; }
+        p += MLEN;
+
+        size_t hs = p;
+        while (p < text.size() && is_hex(text[p])) ++p;
+        if (p == hs) { pos = found + 1; continue; }
+        uint64_t off = std::strtoull(
+            std::string(text, hs, p - hs).c_str(), nullptr, 16);
+
+        if (p + 1 < text.size() && text[p] == ')' && text[p+1] == ')') {
+            // Only count if offset matches a known JNIEnv entry
+            static const VtableEntry* tbl    = kJNIEnvTable;
+            static const size_t       tblsz  = kJNIEnvTableSize;
+            if (lookup_vtable(tbl, tblsz, off))
+                counts[var]++;
+        }
+        pos = found + 1;
+    }
+    if (counts.empty()) return "";
+    auto best = std::max_element(counts.begin(), counts.end(),
+        [](const auto& a, const auto& b){ return a.second < b.second; });
+    return best->first;
+}
+
+// ---------------------------------------------------------------------------
 // Ghidra emits indirect vtable calls as:
 //   (**(code **)(*<var> + 0x<hex>))(<args>)
 //
@@ -1805,6 +1853,19 @@ std::string jni_annotate(const std::string& func_name,
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
     // -----------------------------------------------------------------------
     if (kind == JniKind::NONE) {
+        // Heuristic: some internal functions receive a JNIEnv** and dispatch
+        // through the JNI vtable without having a Java_* name.  Scan for
+        // (**(code **)(*VAR + 0xOFF)) patterns whose offset matches a known
+        // JNIEnv table entry; if found, run the vtable and local-type passes.
+        std::string env_var = detect_jni_env_var(result);
+        if (!env_var.empty()) {
+            // Rename the detected env pointer to "env" throughout
+            result = replace_ident(result, env_var, "env");
+            // Resolve (*env + 0xOFF) vtable calls → (*env)->FuncName
+            result = resolve_vtable_calls(result, "");  // no JavaVM var
+            result = replace_jni_constants(result);
+            result = resolve_jni_locals(result);
+        }
         result = remove_writeonly_vars(result);
         result = remove_dead_inits(result);
         result = fix_implicit_return(result);
