@@ -1,0 +1,92 @@
+// detected - XOR with constant (detection may be wrong)
+// detected - XOR loop (detection may be wrong)
+void _Z6killGGv(void)
+
+{
+
+  int4 val1;
+  uint4 val2;
+  uint8 val3;
+  void *param1;
+  char *pcVar5;
+  uint8 val4;
+  uint8_t axStack_68 [16];
+  uint8_t axStack_58 [16];
+
+
+
+
+  if (((uRam00000000000c01d0 & 1) == 0) &&
+     (val1 = __cxa_guard_acquire((void *)0xc01d0), val1 != 0)) {
+    uRam00000000000c01c8 = 0x5d57;
+    uRam00000000000c01a8 = uRam0000000000084048;
+    uRam00000000000c01a0 = uRam0000000000084040;
+    uRam00000000000c01b8 = uRam0000000000084058;
+    uRam00000000000c01b0 = "AFOC";
+    uRam00000000000c01c0 = uRam0000000000084080;
+    uRam00000000000c01ca = 0x2e;
+    __cxa_atexit(_ZN2ay14OBFUSCATE_dataILm43ELc46EED2Ev,0xc01a0,0xc0000);
+    __cxa_guard_release((void *)0xc01d0);
+  }
+  if (uRam00000000000c01ca != 0) {
+    uRam00000000000c01a0 = uRam00000000000c01a0 ^ 0x2e2e2e2e2e2e2e2e;
+    uRam00000000000c01a8 = uRam00000000000c01a8 ^ 0x2e2e2e2e2e2e2e2e;
+    uRam00000000000c01b0 = uRam00000000000c01b0 ^ 0x2e2e2e2e2e2e2e2e;
+    uRam00000000000c01b8 = uRam00000000000c01b8 ^ 0x2e2e2e2e2e2e2e2e;
+    uRam00000000000c01ca = uRam00000000000c01ca ^ 0x2e;
+    uRam00000000000c01c0 = uRam00000000000c01c0 ^ 0x2e2e2e2e2e2e2e2e;
+    uRam00000000000c01c8 = uRam00000000000c01c8 ^ 0x2e2e;
+  }
+  val1 = access(0xc01a0,0);
+  if (val1 != -1) {
+    if (((uRam00000000000c0208 & 1) == 0) &&
+       (val1 = __cxa_guard_acquire((void *)0xc0208), val1 != 0)) {
+      xRam00000000000c01e8 = xRam0000000000084068;
+      xRam00000000000c01e0 = xRam0000000000084060;
+      xRam00000000000c01f8 = xRam0000000000084078;
+      xRam00000000000c01f0 = xRam0000000000084070;
+      xRam00000000000c0200 = 0x2e;
+      __cxa_atexit(_ZN2ay14OBFUSCATE_dataILm33ELc46EED2Ev,0xc01e0,0xc0000);
+      __cxa_guard_release((void *)0xc0208);
+    }
+    _ZN2ay14OBFUSCATE_dataILm33ELc46EE7decryptEv(0xc01e0);
+    val3 = strlen((char *)0xc01e0);
+    if (val3 != 0) {
+      val4 = 0;
+      do {
+        sscanf((char *)(val4 + 0xc01e0),(char *)"%2hhx");
+        val4 = val4 + 2;
+      } while (val4 < val3);
+    }
+    param1 = fopen((char *)0xc01a0,(char *)"rb");
+    if (param1 == (void *)0x0) {
+      perror("fopen");
+    }
+    else {
+      _Z7md5FileP7__sFILEPh(param1,axStack_58);
+      fclose(param1);
+      val1 = memcmp(axStack_58,axStack_68,0x10);
+      if (val1 == 0) {
+        val3 = strlen((char *)0xc01a0);
+        pcVar5 = malloc(val3 + 0x13);
+        sprintf(pcVar5,(char *)"su -c \"chmod 777 %s\"");
+        system(pcVar5);
+        free(pcVar5);
+        val3 = strlen((char *)0xc01a0);
+        pcVar5 = malloc(val3 + 9);
+        sprintf(pcVar5,(char *)"su -c \"%s\"");
+        val2 = system(pcVar5);
+        free(pcVar5);
+        if ((val2 != 0xffffffff) && ((val2 & 0xff7f) == 0)) {
+
+
+
+          goto code_r0x00018ed4;
+        }
+      }
+    }
+  }
+  exit(0);
+code_r0x00018ed4:
+  __stack_chk_fail();
+}
