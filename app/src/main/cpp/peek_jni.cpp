@@ -474,11 +474,13 @@ struct FuncEntry {
 };
 
 // Build a vector of sized FuncEntry from func_map, resolving symbol sizes
-// where known and falling back to estimate_size otherwise.
+// where known, then explicitly-known sizes (e.g. thunks pinned during
+// discovery), and falling back to estimate_size otherwise.
 static std::vector<FuncEntry> build_entries(
     const std::map<uint64_t, std::string>& fm,
     const ElfParseResult& elf,
-    uint64_t code_base, uint64_t code_end)
+    uint64_t code_base, uint64_t code_end,
+    const std::map<uint64_t, uint64_t>& known_sizes = {})
 {
     std::vector<FuncEntry> out;
     out.reserve(fm.size());
@@ -488,6 +490,10 @@ static std::vector<FuncEntry> build_entries(
         uint64_t sz = 0;
         for (const auto& fn : elf.functions) {
             if (fn.address == addr && fn.size > 0) { sz = fn.size; break; }
+        }
+        if (sz == 0) {
+            auto ks = known_sizes.find(addr);
+            if (ks != known_sizes.end()) sz = ks->second;
         }
         if (sz == 0) sz = estimate_size(addr, fm, code_end);
         if (sz == 0) continue;
@@ -619,11 +625,15 @@ static bool run_analysis(AnalysisContext& ctx) {
         return false;
     };
 
-    for (auto& [addr, name] : func_map) {
-        auto it = disasm_cache.find(addr);
-        if (it == disasm_cache.end()) continue;
-        const auto& insns = it->second;
-        if (insns.empty() || insns.size() > 5) continue;   // thunks are tiny
+    // thunk_naming_pass() labels a single func_map entry as a thunk (j_<name>)
+    // if its disassembly matches a direct "b #target" or PLT-style
+    // "adrp+ldr+br" jumpout pattern. Used both for Phase-1/2 functions
+    // (below) and for PLT stubs first discovered as call targets in
+    // Phase 4 (which have no symbol of their own and are disassembled
+    // for the first time there — see "Phase 4.5" further down).
+    auto thunk_naming_pass = [&](uint64_t addr, std::string& name,
+                                  const std::vector<DisasmInstruction>& insns) {
+        if (insns.empty() || insns.size() > 5) return;   // thunks are tiny
 
         const auto& last = insns.back();
 
@@ -631,13 +641,13 @@ static bool run_analysis(AnalysisContext& ctx) {
         if (last.mnemonic == "b") {
             uint64_t target = 0;
             if (!parse_hex_imm(last.operands.c_str(), target) || target == addr)
-                continue;
+                return;
             auto tgt_it = func_map.find(target);
             std::string base = (tgt_it != func_map.end() && !tgt_it->second.empty())
                                ? tgt_it->second : sub_name(target);
             name = (base.size() >= 2 && base.substr(0, 2) == "j_") ? base : "j_" + base;
             LOGI("Direct thunk 0x%llx → %s", (unsigned long long)addr, name.c_str());
-            continue;
+            return;
         }
 
         // ── Case B: indirect branch "br Xn" — resolve via GOT ────────────────
@@ -667,16 +677,22 @@ static bool run_analysis(AnalysisContext& ctx) {
                 }
             }
 
-            if (!found_adrp || !found_ldr) continue;
+            if (!found_adrp || !found_ldr) return;
 
             uint64_t got_va = adrp_page + ldr_off;
             auto got_it = got_to_sym.find(got_va);
-            if (got_it == got_to_sym.end()) continue;
+            if (got_it == got_to_sym.end()) return;
 
             name = "j_" + got_it->second;
             LOGI("PLT thunk 0x%llx → %s (GOT 0x%llx)",
                  (unsigned long long)addr, name.c_str(), (unsigned long long)got_va);
         }
+    };
+
+    for (auto& [addr, name] : func_map) {
+        auto it = disasm_cache.find(addr);
+        if (it == disasm_cache.end()) continue;
+        thunk_naming_pass(addr, name, it->second);
     }
 
     // --- Phase 4: branch-target discovery ---
@@ -692,8 +708,63 @@ static bool run_analysis(AnalysisContext& ctx) {
         if (!inside) func_map[t] = "";
     }
 
+    // --- Phase 4.5: thunk-naming for Phase-4 discoveries (e.g. PLT stubs
+    // called directly without a dedicated jumpout wrapper) ---
+    //   These addresses have no ELF symbol and were never disassembled in
+    //   Phase 3 (they weren't in func_map yet), so disasm_cache has no entry
+    //   for them. Disassemble each one now and run the same thunk-naming
+    //   pass used above — this is what lets a bare PLT entry (e.g. the
+    //   "adrp+ldr+add+br" stub at the call site of an imported libc
+    //   function) be correctly renamed to j_<importname> and tagged as a
+    //   thunk (kind=2) instead of showing up as an unnamed sub_<addr> with
+    //   un-decompilable trampoline bytes.
+    //
+    //   We also pin the exact probed size for each renamed thunk in
+    //   thunk_sizes. Without this, Phase 5's build_entries() falls back to
+    //   estimate_size(), which measures distance to the *next func_map
+    //   entry* — and since unreferenced PLT stubs in between (e.g. ones
+    //   nothing in .text calls directly) are never added to func_map at
+    //   all, that distance can overshoot through several unclaimed PLT
+    //   slots and into the next real function, producing a wildly
+    //   oversized "thunk" that swallows real code.
+    std::map<uint64_t, uint64_t> thunk_sizes;
+    for (auto& [addr, name] : func_map) {
+        if (!name.empty()) continue;               // already named/handled
+        if (disasm_cache.count(addr)) continue;     // already disassembled in Phase 3
+
+        // Probe length = distance to the next known func_map entry, capped
+        // to a small thunk-sized window. A fixed constant either truncates
+        // a thunk early or, worse, overshoots into the next PLT entry and
+        // shifts the real terminating br/b instruction off the end of the
+        // list that thunk_naming_pass inspects via insns.back(). 16 bytes
+        // covers the largest case we handle (adrp+ldr+add+br); estimate_size
+        // already won't exceed the gap to the next entry.
+        uint64_t probe_len = std::min<uint64_t>(estimate_size(addr, func_map, code_end), 16);
+        if (probe_len == 0) continue;
+        const uint8_t* data = va_to_ptr(elf, addr, probe_len);
+        if (!data) continue;
+        DisasmResult dr = disassemble_arm64(data, (size_t)probe_len, addr);
+        if (!dr.ok || dr.instructions.empty()) continue;
+
+        disasm_cache[addr] = dr.instructions;
+        thunk_naming_pass(addr, name, dr.instructions);
+
+        // Only pin a size if naming actually succeeded (name is non-empty
+        // afterward); an un-recognized stub falls through to sub_<addr>
+        // with the normal estimate_size() behavior, same as before.
+        if (!name.empty()) {
+            // Real stub length = bytes actually consumed up to and
+            // including the terminating br/b instruction, not the full
+            // probe window (which may include trailing bytes from the
+            // capped gap that aren't part of this stub).
+            uint64_t real_len = dr.instructions.back().address
+                               + dr.instructions.back().size - addr;
+            thunk_sizes[addr] = std::min(real_len, probe_len);
+        }
+    }
+
     // --- Phase 5: build final function list and store everything ---
-    auto all_entries = build_entries(func_map, elf, code_base, code_end);
+    auto all_entries = build_entries(func_map, elf, code_base, code_end, thunk_sizes);
     LOGI("Functions: %zu (symbol/prologue: %zu, branch-target: %zu)",
          all_entries.size(), phase12.size(),
          all_entries.size() > phase12.size() ? all_entries.size() - phase12.size() : 0u);
@@ -1002,6 +1073,22 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     if (fn.id < 0) {
         LOGE("Function not found funcId=%lld", (long long)func_id);
         return env->NewStringUTF("");
+    }
+
+    // Thunks (kind==2, e.g. j_malloc) are PLT trampolines: a handful of
+    // adrp/ldr/add/br instructions that jump to an externally-resolved
+    // import. There is no real logic to decompile — running Ghidra's
+    // p-code pipeline on the trampoline bytes either errors out or
+    // produces meaningless output. Synthesize a one-line stub instead,
+    // mirroring how Ghidra/IDA render thunks to externals.
+    if (fn.kind == 2) {
+        std::string import_name = fn.name;
+        if (import_name.size() >= 2 && import_name[0] == 'j' && import_name[1] == '_')
+            import_name = import_name.substr(2);
+        std::string stub = "// thunk -> external import\nvoid " + fn.name +
+                            "(void) {\n    " + import_name + "();\n}\n";
+        ctx->db->store_pseudocode((int64_t)func_id, CACHE_TAG + stub);
+        return env->NewStringUTF(stub.c_str());
     }
 
     // Re-parse ELF to obtain raw bytes for the function.
