@@ -470,6 +470,7 @@ static const JniConst kJniConsts[] = {
     {"0x10004", "JNI_VERSION_1_4"},
     {"0x10002", "JNI_VERSION_1_2"},
     {"0x10001", "JNI_VERSION_1_1"},
+    {"0xffffffff", "JNI_ERR"},
 };
 
 static std::string replace_jni_constants(const std::string& src) {
@@ -1486,7 +1487,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V8\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V9\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1498,10 +1499,26 @@ std::string jni_annotate(const std::string& func_name,
     // meaningful names based on usage, matching IDA-quality pseudocode output.
     // -----------------------------------------------------------------------
 
-    // ---- U0. Resolve Ghidra width-only type placeholders -------------------
+    // ---- U0a. Strip Ghidra decompiler warning comments ---------------------
+    // Ghidra emits /* WARNING: ... */ lines for analysis uncertainty
+    // (out-of-bounds flow, unreachable blocks, etc.).  They are noise at the
+    // pseudocode level — strip them before any other pass runs.
+    std::string result;
+    {
+        std::vector<std::string> wlines = split_lines(pseudocode);
+        for (auto& wl : wlines) {
+            size_t p = wl.find_first_not_of(" \t");
+            if (p != std::string::npos &&
+                wl.compare(p, 12, "/* WARNING:") == 0) continue;
+            if (!result.empty()) result += '\n';
+            result += wl;
+        }
+    }
+
+    // ---- U0b. Resolve Ghidra width-only type placeholders ------------------
     // xunknown1/2/4/8 → uint8_t/uint16_t/uint32_t/uint64_t.
-    // Must run first so every downstream pass sees real C type tokens.
-    std::string result = resolve_xunknown_types(pseudocode);
+    // Must run before other passes so they see real C type tokens.
+    result = resolve_xunknown_types(result);
 
     // ---- U1. Strip ARM64 stack canary boilerplate --------------------------
     // Removes: tpidr_el0 TLS load, canary value load, and the trailing

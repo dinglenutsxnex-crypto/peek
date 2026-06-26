@@ -154,32 +154,59 @@ static std::string elf_read_cstring(const ElfParseResult& elf,
     return (deref.size() > direct.size()) ? deref : direct;
 }
 
-// Resolve an xRam VA as a function pointer: read the 8-byte value stored at
-// `va`, then look it up in the ELF function/symbol table.  Returns the
-// function name if a named (non-generic) entry is found, else "".
-// This handles the JNINativeMethod fnPtr field, which Ghidra emits as
-// xRam<addr> when the stored pointer refers to another function in the .so.
-static std::string elf_resolve_funcptr(const ElfParseResult& elf, uint64_t va) {
-    bool ok = false;
-    uint64_t target = elf_read_u64le(elf, va, ok);
-    if (!ok || target == 0) return "";
-
-    // Named functions first (exported symbols, sub_XXXX excluded).
+// Try to match `target` VA against named entries in functions + symbols.
+// Returns the name or "" if nothing useful found.
+static std::string lookup_va_name(const ElfParseResult& elf, uint64_t target) {
+    if (target == 0) return "";
     for (const auto& fn : elf.functions) {
-        if (fn.address != target) continue;
-        if (fn.name.empty()) continue;
-        // Skip Ghidra-style generic names: sub_XXXX, j_XXXX, etc.
-        if (fn.name.size() > 4 && fn.name[3] == '_' &&
+        if (fn.address != target || fn.name.empty()) continue;
+        if (fn.name.size() > 4 && fn.name[3]=='_' &&
             (fn.name[0]=='s'||fn.name[0]=='j')) continue;
         return fn.name;
     }
-    // Also walk the raw symbol table (catches weak / local exports).
     for (const auto& sym : elf.symbols) {
-        if (sym.address != target) continue;
-        if (sym.name.empty()) continue;
-        if (sym.name.size() > 4 && sym.name[3] == '_' &&
+        if (sym.address != target || sym.name.empty()) continue;
+        if (sym.name.size() > 4 && sym.name[3]=='_' &&
             (sym.name[0]=='s'||sym.name[0]=='j')) continue;
         return sym.name;
+    }
+    return "";
+}
+
+static std::string elf_resolve_funcptr(const ElfParseResult& elf, uint64_t va) {
+    // Path 1: read the 8-byte pointer stored at `va` and look up the target.
+    // Works when the slot already contains the function VA (non-PIE or
+    // pre-linked static data).
+    bool ok = false;
+    uint64_t target = elf_read_u64le(elf, va, ok);
+    if (ok && target != 0) {
+        std::string name = lookup_va_name(elf, target);
+        if (!name.empty()) return name;
+    }
+
+    // Path 2: RELA fallback.
+    // On Android ARM64, JNINativeMethod fnPtr fields are often filled by an
+    // R_AARCH64_RELATIVE relocation (type 0x403).  The ELF file bytes at `va`
+    // are 0 (or the raw addend) at this point; the real function VA lives in
+    // the RELA entry's r_addend field.  Scan every SHT_RELA section for an
+    // entry whose r_offset matches `va`.
+    static constexpr uint32_t R_AARCH64_RELATIVE = 0x403;
+    for (const auto& sec : elf.sections) {
+        if (sec.type != SHT_RELA) continue;
+        const size_t entry_size = sizeof(Elf64_Rela);
+        if (sec.size < entry_size) continue;
+        uint64_t n = sec.size / entry_size;
+        for (uint64_t i = 0; i < n; ++i) {
+            uint64_t off = sec.offset + i * entry_size;
+            if (off + entry_size > elf.data.size()) break;
+            const Elf64_Rela* r =
+                reinterpret_cast<const Elf64_Rela*>(elf.data.data() + off);
+            if (r->r_offset != va) continue;
+            if (ELF64_R_TYPE(r->r_info) != R_AARCH64_RELATIVE) continue;
+            std::string name = lookup_va_name(
+                elf, static_cast<uint64_t>(r->r_addend));
+            if (!name.empty()) return name;
+        }
     }
     return "";
 }
