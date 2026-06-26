@@ -1,7 +1,9 @@
 package com.nex.peek
 
+import android.Manifest
 import android.annotation.SuppressLint
 import android.content.Context
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import android.text.Editable
@@ -9,7 +11,10 @@ import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
+import android.view.View
 import android.widget.PopupMenu
+import android.widget.Toast
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
@@ -18,8 +23,8 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
+import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
-import android.view.View
 import com.google.android.material.tabs.TabLayoutMediator
 import com.nex.peek.adapter.FunctionCompactAdapter
 import com.nex.peek.adapter.ViewOptionAdapter
@@ -30,6 +35,9 @@ import com.nex.peek.ui.AnalysisSession
 import com.nex.peek.ui.AnalysisViewModel
 import com.nex.peek.ui.TabId
 import com.nex.peek.ui.TabSpec
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 
 class AnalysisActivity : AppCompatActivity() {
 
@@ -37,6 +45,18 @@ class AnalysisActivity : AppCompatActivity() {
     private val vm: AnalysisViewModel by viewModels()
     private lateinit var funcAdapter: FunctionCompactAdapter
     private val allFunctions = mutableListOf<FunctionInfo>()
+
+    // Held while waiting for the user to grant WRITE_EXTERNAL_STORAGE (API < 29).
+    private var pendingDownloadType: BulkDownloader.DownloadType? = null
+
+    private val writePermLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { granted ->
+        val type = pendingDownloadType ?: return@registerForActivityResult
+        pendingDownloadType = null
+        if (granted) startDownload(type)
+        else Toast.makeText(this, "Storage permission required to save zip", Toast.LENGTH_LONG).show()
+    }
 
     // Which tabs are currently visible, in display order.
     private var activeTabs: MutableList<TabId> = mutableListOf()
@@ -110,21 +130,103 @@ class AnalysisActivity : AppCompatActivity() {
         }
     }
 
-    // ── View-options toolbar button ───────────────────────────────────────────
+    // ── Toolbar buttons ───────────────────────────────────────────────────────
 
     override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, MENU_VIEW_OPTIONS, 0, "View options")
+        menu.add(0, MENU_DOWNLOAD, 0, "Download")
+            .setIcon(R.drawable.ic_download)
+            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
+        menu.add(0, MENU_VIEW_OPTIONS, 1, "View options")
             .setIcon(R.drawable.ic_view_options)
             .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
         return true
     }
 
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        if (item.itemId == MENU_VIEW_OPTIONS) {
-            toggleViewOptions()
-            return true
+        return when (item.itemId) {
+            MENU_VIEW_OPTIONS -> { toggleViewOptions(); true }
+            MENU_DOWNLOAD     -> { showDownloadMenu(b.toolbar); true }
+            else              -> super.onOptionsItemSelected(item)
         }
-        return super.onOptionsItemSelected(item)
+    }
+
+    // ── Download popup ────────────────────────────────────────────────────────
+
+    private fun showDownloadMenu(anchor: View) {
+        val popup = PopupMenu(this, anchor)
+        popup.menu.add(0, DL_HEX,        0, "Download Hex")
+        popup.menu.add(0, DL_ASM,        1, "Download Disassembly")
+        popup.menu.add(0, DL_PSEUDOCODE, 2, "Download Pseudocode")
+        popup.setOnMenuItemClickListener { item ->
+            when (item.itemId) {
+                DL_HEX        -> { initiateDownload(BulkDownloader.DownloadType.HEX); true }
+                DL_ASM        -> { initiateDownload(BulkDownloader.DownloadType.ASM); true }
+                DL_PSEUDOCODE -> { initiateDownload(BulkDownloader.DownloadType.PSEUDOCODE); true }
+                else          -> false
+            }
+        }
+        popup.show()
+    }
+
+    private fun initiateDownload(type: BulkDownloader.DownloadType) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
+            if (checkSelfPermission(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                    != PackageManager.PERMISSION_GRANTED) {
+                pendingDownloadType = type
+                writePermLauncher.launch(Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                return
+            }
+        }
+        startDownload(type)
+    }
+
+    private fun startDownload(type: BulkDownloader.DownloadType) {
+        if (allFunctions.isEmpty()) {
+            Toast.makeText(this, "No functions to download", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val handle = AnalysisSession.get()
+        if (handle == 0L) {
+            Toast.makeText(this, "No binary loaded", Toast.LENGTH_SHORT).show()
+            return
+        }
+        val binaryName = intent.getStringExtra(EXTRA_NAME) ?: "binary"
+        val functions  = allFunctions.toList()
+
+        Toast.makeText(
+            this,
+            "Preparing ${type.label} for ${functions.size} functions…",
+            Toast.LENGTH_SHORT
+        ).show()
+
+        lifecycleScope.launch {
+            val result = runCatching {
+                withContext(Dispatchers.IO) {
+                    BulkDownloader.downloadAll(
+                        context    = applicationContext,
+                        handle     = handle,
+                        functions  = functions,
+                        type       = type,
+                        binaryName = binaryName,
+                        onProgress = { /* progress available if needed */ }
+                    )
+                }
+            }
+            result.onSuccess { filename ->
+                Toast.makeText(
+                    this@AnalysisActivity,
+                    "Saved to Downloads: $filename",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+            result.onFailure { err ->
+                Toast.makeText(
+                    this@AnalysisActivity,
+                    "Download failed: ${err.message}",
+                    Toast.LENGTH_LONG
+                ).show()
+            }
+        }
     }
 
     private fun toggleViewOptions() {
@@ -228,7 +330,13 @@ class AnalysisActivity : AppCompatActivity() {
     companion object {
         const val EXTRA_NAME = "binary_name"
 
+        private const val MENU_DOWNLOAD     = 1002
         private const val MENU_VIEW_OPTIONS = 1001
+
+        private const val DL_HEX        = 2001
+        private const val DL_ASM        = 2002
+        private const val DL_PSEUDOCODE = 2003
+
         private const val PREFS_NAME = "peek_prefs"
         private const val PREFS_TABS  = "visible_tabs"
 
