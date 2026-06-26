@@ -1273,87 +1273,148 @@ static bool is_stmt_write(const std::string& line, const std::string& var) {
     return true;
 }
 
-// Remove local variables that are only ever written, never read.
-// Such variables are write-only dead code — either compiler temporaries or
-// implicit return-value registers that Ghidra couldn't attach to "return".
-// Removes both the declaration line and every standalone assignment.
+// Merge write-only local variables into a surviving variable of compatible type.
+// A variable is "write-only" if every occurrence of it in the pseudocode is
+// either its declaration or the LHS of a standalone assignment — it is never
+// read in any expression, condition, or function argument.
+//
+// Instead of deleting such variables (which would hollow out the branches they
+// live in), we redirect each of their assignments to the nearest surviving
+// integer-typed variable so the logic stays intact.  Only the declaration of
+// the write-only variable is removed.
+//
+// If no compatible survivor exists (e.g., the write-only var is a pointer type
+// with no matching pointer survivor), the variable is left untouched.
 static std::string remove_writeonly_vars(const std::string& code) {
-    std::vector<std::string> lines = split_lines(code);
-
-    // Collect names of all locally-declared variables.
-    std::vector<std::string> locals;
-    for (const auto& ln : lines) {
-        if (ln.empty() || (ln[0]!=' ' && ln[0]!='\t')) continue;
-        size_t semi = ln.rfind(';');
-        if (semi == std::string::npos) continue;
-        if (ln.find('=') != std::string::npos && ln.find('=') < semi) continue;
-        size_t p0 = ln.find_first_not_of(" \t");
-        if (p0 == std::string::npos) continue;
-        if (ln.compare(p0,3,"for")==0 || ln.compare(p0,2,"if")==0 ||
-            ln.compare(p0,5,"while")==0) continue;
-        size_t ve = semi;
-        while (ve > p0 && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
-        size_t vs = ve;
-        while (vs > p0 && is_id(ln[vs-1])) --vs;
-        if (vs == ve) continue;
-        std::string var(ln, vs, ve - vs);
-        if (var.size() < 2) continue;
-        locals.push_back(var);
+    // ---- 1. Collect all locally-declared variables with type + declaration
+    //         line index. -------------------------------------------------------
+    struct DeclVar { std::string type; std::string name; size_t line_idx; };
+    std::vector<DeclVar> locals;
+    {
+        std::vector<std::string> lines = split_lines(code);
+        for (size_t i = 0; i < lines.size(); ++i) {
+            const auto& ln = lines[i];
+            if (ln.empty() || (ln[0]!=' ' && ln[0]!='\t')) continue;
+            size_t semi = ln.rfind(';');
+            if (semi == std::string::npos) continue;
+            // Skip initializing declarations (contain '=' before ';')
+            if (ln.find('=') != std::string::npos && ln.find('=') < semi) continue;
+            size_t p0 = ln.find_first_not_of(" \t");
+            if (p0 == std::string::npos) continue;
+            if (ln.compare(p0,3,"for")==0 || ln.compare(p0,2,"if")==0 ||
+                ln.compare(p0,5,"while")==0) continue;
+            // Variable name = last identifier before ';'
+            size_t ve = semi;
+            while (ve > p0 && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
+            size_t vs = ve;
+            while (vs > p0 && is_id(ln[vs-1])) --vs;
+            if (vs == ve || vs == p0) continue;
+            std::string name(ln, vs, ve - vs);
+            if (name.size() < 2) continue;
+            // Type = everything from p0 up to (but not including) the name,
+            // with trailing spaces and '*' stripped for comparison purposes.
+            size_t te = vs;
+            while (te > p0 && (ln[te-1]==' '||ln[te-1]=='\t'||ln[te-1]=='*')) --te;
+            std::string type(ln, p0, te - p0);
+            locals.push_back({std::move(type), std::move(name), i});
+        }
     }
 
-    std::string result = code;
-    for (const auto& var : locals) {
+    // ---- 2. Helper: is `var` write-only in `src`? ----------------------------
+    auto is_writeonly = [&](const std::string& var, const std::string& src) -> bool {
         const size_t vlen = var.size();
-        bool has_read = false;
         size_t pos = 0;
-        while ((pos = result.find(var, pos)) != std::string::npos) {
-            bool lok = (pos==0) || !is_id(result[pos-1]);
-            bool rok = (pos+vlen>=result.size()) || !is_id(result[pos+vlen]);
-            if (!lok || !rok) { ++pos; continue; }
-
-            // Find the line containing this occurrence.
-            size_t ls = result.rfind('\n', pos);
-            ls = (ls == std::string::npos) ? 0 : ls + 1;
-            size_t le = result.find('\n', pos);
-            if (le == std::string::npos) le = result.size();
-            std::string ln(result, ls, le - ls);
-
+        while ((pos = src.find(var, pos)) != std::string::npos) {
+            bool lok = (pos==0)||!is_id(src[pos-1]);
+            bool rok = (pos+vlen>=src.size())||!is_id(src[pos+vlen]);
+            if (!lok||!rok) { ++pos; continue; }
+            size_t ls = src.rfind('\n', pos);
+            ls = (ls==std::string::npos)?0:ls+1;
+            size_t le = src.find('\n', pos);
+            if (le==std::string::npos) le=src.size();
+            std::string ln(src, ls, le-ls);
             // Pure declaration — not a read.
-            if (ln.rfind(';') != std::string::npos &&
-                ln.find('=') == std::string::npos) { pos = le; continue; }
-
-            // Standalone write — only a read if var also appears on the RHS.
+            if (ln.rfind(';')!=std::string::npos && ln.find('=')==std::string::npos) {
+                pos=le; continue;
+            }
+            // Standalone write — read only if var also appears on RHS.
             if (is_stmt_write(ln, var)) {
                 size_t eq = ln.find('=');
                 if (eq != std::string::npos) {
-                    size_t rp = 0;
-                    std::string rhs(ln, eq + 1);
-                    while ((rp = rhs.find(var, rp)) != std::string::npos) {
-                        bool rl = (rp==0)||!is_id(rhs[rp-1]);
-                        bool rr = (rp+vlen>=rhs.size())||!is_id(rhs[rp+vlen]);
-                        if (rl && rr) { has_read = true; break; }
+                    size_t rp=0; std::string rhs(ln, eq+1);
+                    while ((rp=rhs.find(var,rp))!=std::string::npos) {
+                        bool rl=(rp==0)||!is_id(rhs[rp-1]);
+                        bool rr=(rp+vlen>=rhs.size())||!is_id(rhs[rp+vlen]);
+                        if (rl&&rr) return false; // var on RHS = it's read
                         ++rp;
                     }
                 }
-                pos = le; continue;
+                pos=le; continue;
             }
-
-            has_read = true; break;
+            return false; // any other occurrence = it's read
         }
+        return true;
+    };
 
-        if (has_read) continue;
+    // ---- 3. Integer-like types eligible for merging. -------------------------
+    auto is_int_type = [](const std::string& t) -> bool {
+        static const char* const kInt[] = {
+            "jint","jlong","jshort","jbyte","jboolean","jsize","jchar",
+            "int","long","short","char","bool",
+            "uint8_t","uint16_t","uint32_t","uint64_t",
+            "int8_t","int16_t","int32_t","int64_t", nullptr
+        };
+        for (auto p=kInt; *p; ++p) if (t==*p) return true;
+        return false;
+    };
 
-        // Blank the declaration and all assignment lines.
+    // ---- 4. Evaluate all variables against the ORIGINAL code so that earlier
+    //         merges don't affect later write-only detection. -------------------
+    struct MergeOp { std::string wov; std::string survivor; };
+    std::vector<MergeOp> ops;
+    for (const auto& wov : locals) {
+        if (!is_writeonly(wov.name, code)) continue;
+        if (!is_int_type(wov.type)) continue; // only merge integer-width vars
+        // Find surviving variable of compatible integer type, closest in
+        // declaration order (tie-break: prefer earlier declaration).
+        std::string survivor;
+        size_t best_dist = SIZE_MAX;
+        for (const auto& sov : locals) {
+            if (sov.name == wov.name) continue;
+            if (!is_int_type(sov.type)) continue;
+            if (is_writeonly(sov.name, code)) continue; // don't merge into another WOV
+            size_t dist = (sov.line_idx > wov.line_idx)
+                ? sov.line_idx - wov.line_idx
+                : wov.line_idx - sov.line_idx;
+            if (dist < best_dist) { best_dist=dist; survivor=sov.name; }
+        }
+        ops.push_back({wov.name, std::move(survivor)});
+    }
+
+    // ---- 5. Apply merges. ----------------------------------------------------
+    std::string result = code;
+    for (const auto& op : ops) {
+        const std::string& wov = op.wov;
+        const std::string& sur = op.survivor;
         std::vector<std::string> cl = split_lines(result);
         for (auto& ln : cl) {
-            if (is_stmt_write(ln, var)) { ln = ""; continue; }
+            // Remove the WOV declaration line.
             size_t si = ln.rfind(';');
-            if (si != std::string::npos && ln.find('=') == std::string::npos) {
-                size_t ve = si;
-                while (ve > 0 && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
-                size_t vs = ve;
-                while (vs > 0 && is_id(ln[vs-1])) --vs;
-                if (std::string(ln, vs, ve-vs) == var) { ln = ""; continue; }
+            if (si!=std::string::npos && ln.find('=')==std::string::npos) {
+                size_t ve=si;
+                while (ve>0&&(ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
+                size_t vs=ve;
+                while (vs>0&&is_id(ln[vs-1])) --vs;
+                if (std::string(ln,vs,ve-vs)==wov) { ln=""; continue; }
+            }
+            // Rewrite assignment LHS: wov = expr  →  survivor = expr
+            if (!is_stmt_write(ln, wov)) continue;
+            if (sur.empty()) {
+                ln = ""; // no compatible survivor: blank (last resort)
+            } else {
+                size_t p = ln.find_first_not_of(" \t");
+                // Replace exactly the wov name at position p.
+                ln = ln.substr(0,p) + sur + ln.substr(p + wov.size());
             }
         }
         // Rebuild, collapsing consecutive blank lines.
@@ -1361,11 +1422,11 @@ static std::string remove_writeonly_vars(const std::string& code) {
         bool prev_blank = false;
         for (size_t i = 0; i < cl.size(); ++i) {
             bool blank = cl[i].empty() ||
-                         cl[i].find_first_not_of(" \t") == std::string::npos;
+                         cl[i].find_first_not_of(" \t")==std::string::npos;
             if (i) result += '\n';
-            if (!blank) { result += cl[i]; prev_blank = false; }
-            else if (!prev_blank) { prev_blank = true; }
-            else result.pop_back(); // drop the '\n' just appended
+            if (!blank) { result+=cl[i]; prev_blank=false; }
+            else if (!prev_blank) { prev_blank=true; }
+            else result.pop_back();
         }
     }
     return result;
@@ -1600,7 +1661,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V11\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V12\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1648,6 +1709,7 @@ std::string jni_annotate(const std::string& func_name,
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
     // -----------------------------------------------------------------------
     if (kind == JniKind::NONE) {
+        result = remove_writeonly_vars(result);
         return rename_generic_vars(result);
     }
 
@@ -1704,7 +1766,8 @@ std::string jni_annotate(const std::string& func_name,
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
 
-    // ---- U3. Rename surviving generic vars (JNI functions) -----------------
+    // ---- U3. Merge write-only vars into survivors, then rename the rest ----
+    result = remove_writeonly_vars(result);
     result = rename_generic_vars(result);
 
     return result;
