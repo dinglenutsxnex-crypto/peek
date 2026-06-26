@@ -217,6 +217,7 @@ add_library(peek_native SHARED
     db_cache.cpp
     decompiler_bridge.cpp
     jni_annotator.cpp
+    algo_detector.cpp
     crash_handler.cpp
     peek_jni.cpp
 )

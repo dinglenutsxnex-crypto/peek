@@ -18,6 +18,7 @@
  *   nativeDecompileFunction(handle, funcId)     → String
  */
 
+#include "algo_detector.h"
 #include "elf_parser.h"
 #include "disassembler.h"
 #include "xref_detector.h"
@@ -1606,11 +1607,17 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     //    (FindClass, GetMethodID, etc.) whose value Ghidra shows as a hex VA.
     result = resolve_data_refs(result, elf);
 
-    // 3. Store with a version tag so stale cache entries are auto-detected.
+    // 3. Algorithm detection: prepend "// detected - NAME (detection may be
+    //    wrong)" comment lines for any recognised crypto/obfuscation patterns.
+    //    Runs after data-ref resolution so the detector sees the cleanest
+    //    possible pseudocode (resolved names, not raw xRam tokens).
+    result = annotate_algorithms(result);
+
+    // 4. Store with a version tag so stale cache entries are auto-detected.
     ctx->db->store_pseudocode((int64_t)func_id, CACHE_TAG + result);
     LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
 
-    // 4. Lazy learning — if the decompiler inferred a prototype for this
+    // 5. Lazy learning — if the decompiler inferred a prototype for this
     //    function, store it in the signature cache and DB so future callers
     //    (functions that call this one) benefit from the improved types.
     if (inferred.is_set) {
