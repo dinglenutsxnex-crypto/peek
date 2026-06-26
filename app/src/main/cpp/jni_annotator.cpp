@@ -1018,13 +1018,17 @@ static std::string collapse_native_methods(const std::string& code) {
             indent = std::string(lines[rg_line], 0, qi);
         }
 
-        // Generate:  JNINativeMethod methods[] = { {"n","s",fn}, ... };
+        // Generate:  JNINativeMethod methods[] = { {"n","s",(void*)fn}, ... };
+        // The fnPtr field is void*; always cast so the struct initializer
+        // is valid without an implicit function-pointer-to-void* conversion.
         std::string decl = indent + "JNINativeMethod methods[] = {";
         for (size_t i = 0; i < entries.size(); ++i) {
             if (i) decl += ",";
+            const std::string& fp = entries[i].fnptr_val;
+            std::string casted = (fp.empty() || fp[0]=='(') ? fp : "(void*)" + fp;
             decl += "{" + entries[i].name_val + ", " +
                           entries[i].sig_val  + ", " +
-                          entries[i].fnptr_val + "}";
+                          casted + "}";
         }
         decl += "};";
 
@@ -1271,6 +1275,98 @@ static bool is_stmt_write(const std::string& line, const std::string& var) {
     if (q + 1 < line.size() && (line[q+1]=='='||line[q+1]=='>'||line[q+1]=='<'||line[q+1]=='!'))
         return false;
     return true;
+}
+
+// Remove an assignment `var = const_expr;` that is immediately overwritten by
+// the very next assignment to the same variable.  "Const expr" means the RHS
+// contains no `(` — it's a plain identifier or numeric literal with no call.
+// The check is line-level: only blank lines may separate the two assignments.
+static std::string remove_dead_inits(const std::string& code) {
+    std::vector<std::string> lines = split_lines(code);
+    std::vector<bool> dead(lines.size(), false);
+
+    for (size_t i = 0; i < lines.size(); ++i) {
+        const auto& ln = lines[i];
+        size_t p = ln.find_first_not_of(" \t");
+        if (p == std::string::npos) continue;
+
+        // Extract identifier at start of line.
+        size_t ve = p;
+        while (ve < ln.size() && is_id(ln[ve])) ++ve;
+        if (ve == p) continue;
+        std::string var(ln, p, ve - p);
+
+        // Confirm it's `var = <no-call-expr>;`
+        if (!is_stmt_write(ln, var)) continue;
+        size_t eq = ln.find('=', ve);
+        if (eq == std::string::npos) continue;
+        size_t semi = ln.rfind(';');
+        if (semi == std::string::npos || semi <= eq) continue;
+        std::string rhs(ln, eq + 1, semi - eq - 1);
+        if (rhs.find('(') != std::string::npos) continue; // has a call — keep
+
+        // Find the next non-blank line.
+        size_t j = i + 1;
+        while (j < lines.size() &&
+               (lines[j].empty() ||
+                lines[j].find_first_not_of(" \t") == std::string::npos)) ++j;
+        if (j >= lines.size()) continue;
+
+        // If it's also an assignment to the same variable, mark line i as dead.
+        if (is_stmt_write(lines[j], var)) dead[i] = true;
+    }
+
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+    for (size_t i = 0; i < lines.size(); ++i)
+        if (!dead[i]) out.push_back(lines[i]);
+    return join_lines(out);
+}
+
+// For functions declared to return jint, replace a bare `return;` with
+// `return <var>;` using the first jint-typed local variable.
+// Ghidra emits `return;` when the return value is in a register it cannot
+// bind to the return statement; this restores the explicit form.
+static std::string fix_implicit_return(const std::string& code) {
+    std::vector<std::string> lines = split_lines(code);
+
+    // Confirm the function signature returns jint.
+    bool jint_sig = false;
+    for (const auto& ln : lines) {
+        size_t p = ln.find_first_not_of(" \t");
+        if (p == std::string::npos || p > 4) continue; // must be near column 0
+        if (ln.find("jint ") != std::string::npos &&
+            ln.find('(') != std::string::npos) { jint_sig = true; break; }
+    }
+    if (!jint_sig) return code;
+
+    // Find the first jint local-variable declaration.
+    std::string ret_var;
+    for (const auto& ln : lines) {
+        size_t p = ln.find_first_not_of(" \t");
+        if (p == std::string::npos || p < 2) continue; // must be indented
+        size_t semi = ln.rfind(';');
+        if (semi == std::string::npos) continue;
+        if (ln.find('=') != std::string::npos && ln.find('=') < semi) continue;
+        if (ln.compare(p, 5, "jint ") != 0) continue;
+        size_t ve = semi;
+        while (ve > p && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
+        size_t vs = ve;
+        while (vs > p && is_id(ln[vs-1])) --vs;
+        if (vs == ve) continue;
+        ret_var = std::string(ln, vs, ve - vs);
+        break;
+    }
+    if (ret_var.empty()) return code;
+
+    // Replace every bare `return;` with `return <ret_var>;`.
+    for (auto& ln : lines) {
+        size_t p = ln.find_first_not_of(" \t");
+        if (p == std::string::npos) continue;
+        if (ln.compare(p, 7, "return;") != 0) continue;
+        ln = ln.substr(0, p) + "return " + ret_var + ";";
+    }
+    return join_lines(lines);
 }
 
 // Merge write-only local variables into a surviving variable of compatible type.
@@ -1661,7 +1757,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V12\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V13\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1710,6 +1806,8 @@ std::string jni_annotate(const std::string& func_name,
     // -----------------------------------------------------------------------
     if (kind == JniKind::NONE) {
         result = remove_writeonly_vars(result);
+        result = remove_dead_inits(result);
+        result = fix_implicit_return(result);
         return rename_generic_vars(result);
     }
 
@@ -1766,8 +1864,16 @@ std::string jni_annotate(const std::string& func_name,
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
 
-    // ---- U3. Merge write-only vars into survivors, then rename the rest ----
+    // ---- U3. Merge write-only vars into survivors --------------------------
     result = remove_writeonly_vars(result);
+
+    // ---- U4. Remove dead constant pre-assignments immediately overwritten --
+    result = remove_dead_inits(result);
+
+    // ---- U5. Fix bare `return;` → `return <var>;` for jint functions ------
+    result = fix_implicit_return(result);
+
+    // ---- U6. Rename surviving generic vars ---------------------------------
     result = rename_generic_vars(result);
 
     return result;
