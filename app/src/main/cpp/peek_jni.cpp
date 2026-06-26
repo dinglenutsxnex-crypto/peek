@@ -386,8 +386,12 @@ static std::string resolve_data_refs(const std::string& code,
             if (!replacement.empty()) {
                 out += replacement;
             } else {
-                // Keep the original *Ram<addr> token unchanged.
-                out.append(code, token_start, p - token_start);
+                // Nothing resolved: emit unk_<addr> (IDA-style, no leading
+                // zeros) — far more readable than the raw 20-char token.
+                char short_buf[32];
+                snprintf(short_buf, sizeof(short_buf), "unk_%llx",
+                         (unsigned long long)va);
+                out += short_buf;
             }
             pos = p;
         }

@@ -43,17 +43,79 @@ static int count_occurrences(const std::string& code, const char* needle) {
 // ---------------------------------------------------------------------------
 
 // XOR loop — array element XORed with a key inside a counted loop.
-// Signal: indexed memory write where value comes from XOR, inside do/while/for.
+// Requires XOR and an indexed dereference to appear on the SAME line (not just
+// anywhere in the function), preventing false positives where a loop and XOR
+// ops happen to coexist in separate if-blocks.
 static void detect_xor_loop(const std::string& code, std::vector<AlgoHit>& hits) {
-    // Need: loop construct + XOR operator on array element
     bool has_loop = has(code, "do {") || has(code, "while (") || has(code, "for (");
     if (!has_loop) return;
-    if (count_occurrences(code, "^") < 2) return;
-    // At least one indexed dereference used in XOR context
-    if (!has(code, "^ ") && !has(code, " ^")) return;
-    // Look for: *(... + idx) patterns (indexed memory) with XOR nearby
-    if (!has(code, "+ val") && !has(code, "+ var") && !has(code, "[") ) return;
-    hits.push_back({"XOR loop"});
+    // Walk line-by-line: a hit requires XOR + indexed memory + assignment on
+    // one line.  Indexed memory = pointer dereference *(  or  array [ access.
+    size_t line_start = 0;
+    while (line_start < code.size()) {
+        size_t line_end = code.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = code.size();
+        if (line_end > line_start) {
+            const char* ls = code.c_str() + line_start;
+            size_t     len = line_end - line_start;
+            auto lhas = [&](const char* n) {
+                return std::string(ls, len).find(n) != std::string::npos;
+            };
+            bool xor_op  = lhas("^");
+            bool indexed = lhas("*(") || lhas("[");
+            bool assign  = lhas("=");
+            if (xor_op && indexed && assign) {
+                hits.push_back({"XOR loop"});
+                return;
+            }
+        }
+        line_start = line_end + 1;
+    }
+}
+
+// Single-byte XOR key — constant is a repeated byte (e.g. 0x2e2e2e2e2e2e2e2e).
+// Characteristic of simplest XOR ciphers / compile-time string obfuscators.
+static void detect_single_byte_xor_key(const std::string& code,
+                                        std::vector<AlgoHit>& hits) {
+    // Find every "^ 0x" occurrence, extract the hex literal, and check if
+    // all nibble pairs (bytes) are identical.
+    size_t pos = 0;
+    while ((pos = code.find("^ 0x", pos)) != std::string::npos) {
+        pos += 4; // skip "^ 0x"
+        size_t hex_start = pos;
+        while (pos < code.size() && std::isxdigit((unsigned char)code[pos])) ++pos;
+        size_t hex_len = pos - hex_start;
+        // Only care about multi-byte constants (4+ hex digits = 2+ bytes)
+        if (hex_len < 4 || hex_len % 2 != 0) continue;
+        // Check every byte pair equals the first byte pair
+        bool repeated = true;
+        std::string first_byte(code, hex_start, 2);
+        for (size_t i = 2; i < hex_len; i += 2) {
+            if (code.compare(hex_start + i, 2, first_byte) != 0) {
+                repeated = false;
+                break;
+            }
+        }
+        if (repeated) {
+            hits.push_back({"Single-byte XOR key (0x" + first_byte + ")"});
+            return;
+        }
+    }
+}
+
+// ay::obfuscate — compile-time XOR string obfuscation library by Adam Yaxley.
+// Detects mangled C++ names from the ay namespace / OBFUSCATE_data template.
+static void detect_ay_obfuscate(const std::string& code, std::vector<AlgoHit>& hits) {
+    // Mangled destructor:  _ZN2ay14OBFUSCATE_dataI...ED2Ev  or  ED1Ev
+    // Mangled decrypt:     _ZN2ay14OBFUSCATE_dataI...E7decryptEv
+    if (has(code, "_ZN2ay") || has(code, "OBFUSCATE_data")) {
+        hits.push_back({"ay::obfuscate (compile-time XOR string obfuscation)"});
+        return;
+    }
+    // Also catches cases where the demangler ran and left the C++ name
+    if (has(code, "ay::OBFUSCATE") || has(code, "ay::obfuscate")) {
+        hits.push_back({"ay::obfuscate (compile-time XOR string obfuscation)"});
+    }
 }
 
 // Rolling XOR — key state mutates every iteration via rotation or feedback.
@@ -490,7 +552,9 @@ using DetectorFn = void (*)(const std::string&, std::vector<AlgoHit>&);
 
 static const DetectorFn kDetectors[] = {
     // XOR / obfuscation (ordered most-specific first)
+    detect_ay_obfuscate,
     detect_rolling_xor,
+    detect_single_byte_xor_key,
     detect_xor_constant,
     detect_xor_loop,
     // AES
