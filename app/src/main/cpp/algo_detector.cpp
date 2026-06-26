@@ -65,8 +65,18 @@ static void detect_xor_loop(const std::string& code, std::vector<AlgoHit>& hits)
             bool indexed = lhas("*(") || lhas("[");
             bool assign  = lhas("=");
             if (xor_op && indexed && assign) {
-                hits.push_back({"XOR loop"});
-                return;
+                // Crypto XOR modifies data in place: data[i] = data[i] ^ key
+                // Exclude accumulator patterns: local_var = local_var ^ data[i]
+                // by checking that the assignment target itself contains a dereference.
+                std::string lstr(ls, len);
+                size_t eq_pos = lstr.find('=');
+                if (eq_pos != std::string::npos) {
+                    std::string target = lstr.substr(0, eq_pos);
+                    if (target.find("*(") != std::string::npos || target.find('[') != std::string::npos) {
+                        hits.push_back({"XOR loop"});
+                        return;
+                    }
+                }
             }
         }
         line_start = line_end + 1;
@@ -75,6 +85,7 @@ static void detect_xor_loop(const std::string& code, std::vector<AlgoHit>& hits)
 
 // Single-byte XOR key — constant is a repeated byte (e.g. 0x2e2e2e2e2e2e2e2e).
 // Characteristic of simplest XOR ciphers / compile-time string obfuscators.
+// Exclude 0xffffffff (all-ones / ~0) which is a common bit-mask, not a cipher key.
 static void detect_single_byte_xor_key(const std::string& code,
                                         std::vector<AlgoHit>& hits) {
     // Find every "^ 0x" occurrence, extract the hex literal, and check if
@@ -97,6 +108,19 @@ static void detect_single_byte_xor_key(const std::string& code,
             }
         }
         if (repeated) {
+            // Skip 0xffffffff / 0xFF — common bit-mask, not a cipher key
+            if (first_byte == "ff" || first_byte == "FF") {
+                // Only skip if ALL bytes are 0xFF (i.e. it's 0xFFFF... / ~0)
+                bool all_ff = true;
+                for (size_t i = 0; i < hex_len; i += 2) {
+                    if (code.compare(hex_start + i, 2, "ff") != 0 &&
+                        code.compare(hex_start + i, 2, "FF") != 0) {
+                        all_ff = false;
+                        break;
+                    }
+                }
+                if (all_ff) continue;
+            }
             hits.push_back({"Single-byte XOR key (0x" + first_byte + ")"});
             return;
         }
@@ -120,15 +144,17 @@ static void detect_ay_obfuscate(const std::string& code, std::vector<AlgoHit>& h
 
 // Rolling XOR — key state mutates every iteration via rotation or feedback.
 // Strong signal: bit rotation (>> N | << M) combined with XOR in a loop.
+// Ghidra may emit hex shift amounts (>> 0x1b, << 0x1b) instead of decimal.
 static void detect_rolling_xor(const std::string& code, std::vector<AlgoHit>& hits) {
     bool has_loop = has(code, "do {") || has(code, "while (") || has(code, "for (");
     if (!has_loop) return;
     // Bit rotation: (x >> N | x << M) or (x << N | x >> M)
-    bool has_rot = (has(code, ">> ") && has(code, "<< ")) ||
-                   (has(code, ">>5") || has(code, ">>3") ||
-                    has(code, "<<3") || has(code, "<<5"));
+    // Match both decimal (>> 5) and hex (>> 0x1b) shift amounts
+    bool has_right_shift = has(code, ">> ") || has(code, ">>");
+    bool has_left_shift  = has(code, "<< ") || has(code, "<<");
+    bool has_rot = has_right_shift && has_left_shift;
     if (!has_rot) return;
-    if (count_occurrences(code, "^") < 3) return;
+    if (count_occurrences(code, "^") < 2) return;
     hits.push_back({"Rolling XOR cipher"});
 }
 
@@ -317,8 +343,24 @@ static void detect_rc4(const std::string& code, std::vector<AlgoHit>& hits) {
 // ChaCha20 uses four 32-bit magic constants derived from "expand 32-byte k":
 // 0x61707865 ("expa"), 0x3320646e ("nd 3"), 0x79622d32 ("2-by"), 0x6b206574 ("te k")
 // Any two of these four is essentially unique to ChaCha20/Salsa20.
+// Name-based matching excludes the function's own name to prevent false positives
+// (e.g. chacha20_get_constant triggering "ChaCha20 (library call)").
 static void detect_chacha20(const std::string& code, std::vector<AlgoHit>& hits) {
-    if (ihas(code, "chacha") || ihas(code, "salsa20")) {
+    // Name-based detection: only match if the name appears as a CALL target
+    // (followed by '(') or in the body (after the first '{'), not in the
+    // function's own prototype line.
+    bool name_in_call = ihas(code, "chacha(") || ihas(code, "salsa20(") ||
+                        ihas(code, "chacha20(") || ihas(code, "salsa(");
+    bool name_in_body = false;
+    {
+        size_t brace = code.find('{');
+        if (brace != std::string::npos) {
+            std::string body(code, brace + 1);
+            name_in_body = ihas(body, "chacha(") || ihas(body, "salsa20(") ||
+                           ihas(body, "chacha20(") || ihas(body, "salsa(");
+        }
+    }
+    if (name_in_call || name_in_body) {
         hits.push_back({"ChaCha20/Salsa20 (library call)"});
         return;
     }
@@ -336,14 +378,20 @@ static void detect_chacha20(const std::string& code, std::vector<AlgoHit>& hits)
 
 // TEA delta constant: 0x9e3779b9 (derived from golden ratio).
 // Also used in Blowfish, but in a different context.
+// Ghidra emits the negated form -0x61c88647 for subtraction patterns.
+// XTEA also uses 0xC6EF3720 (delta * 32) — detectable independently.
 static void detect_tea(const std::string& code, std::vector<AlgoHit>& hits) {
-    if (has(code, "0x9e3779b9") || ihas(code, "0x9e3779b9")) {
-        // XTEA also uses 0xC6EF3720 (delta * 32)
-        if (has(code, "0xc6ef3720") || ihas(code, "0xc6ef3720")) {
-            hits.push_back({"XTEA"});
-        } else {
-            hits.push_back({"TEA/XTEA/XXTEA"});
-        }
+    // Check for TEA delta in positive or negated form
+    bool has_delta = has(code, "0x9e3779b9") || ihas(code, "0x9e3779b9") ||
+                     has(code, "-0x61c88647") || has(code, "+ -0x61c88647") ||
+                     has(code, "+ -0x61C88647");
+    // Check for XTEA sum init (0xC6EF3720) — detectable independently
+    bool has_xtea_sum = has(code, "0xc6ef3720") || ihas(code, "0xc6ef3720");
+
+    if (has_xtea_sum) {
+        hits.push_back({"XTEA"});
+    } else if (has_delta) {
+        hits.push_back({"TEA/XTEA/XXTEA"});
     }
 }
 
@@ -352,9 +400,24 @@ static void detect_tea(const std::string& code, std::vector<AlgoHit>& hits) {
 // ---------------------------------------------------------------------------
 
 // Blowfish P-array initialised with pi digits: P[0]=0x243F6A88, P[1]=0x85A308D3.
+// Name-based matching excludes the function's own name to prevent false positives
+// (e.g. blowfish_get_p triggering "Blowfish (library call)").
 static void detect_blowfish(const std::string& code, std::vector<AlgoHit>& hits) {
-    if (ihas(code, "blowfish") || ihas(code, "BF_encrypt") ||
-        ihas(code, "BF_set_key")) {
+    // Name-based detection: only match if the name appears as a CALL target
+    // (followed by '(') or in the body (after the first '{'), not in the
+    // function's own prototype line.
+    bool name_in_call = ihas(code, "blowfish(") || ihas(code, "BF_encrypt(") ||
+                        ihas(code, "BF_set_key(");
+    bool name_in_body = false;
+    {
+        size_t brace = code.find('{');
+        if (brace != std::string::npos) {
+            std::string body(code, brace + 1);
+            name_in_body = ihas(body, "blowfish(") || ihas(body, "BF_encrypt(") ||
+                           ihas(body, "BF_set_key(");
+        }
+    }
+    if (name_in_call || name_in_body) {
         hits.push_back({"Blowfish (library call)"});
         return;
     }
@@ -460,6 +523,8 @@ static void detect_kdf(const std::string& code, std::vector<AlgoHit>& hits) {
 
 // The base64 alphabet is unique: 64 printable chars in a 64 or 65-byte table.
 // Also detectable by the shift/mask operations (6-bit groupings).
+// Ghidra emits shift amounts as hex (>> 0x12, >> 0xc) — detect any right
+// shift combined with the 0x3F mask, which is the base64 signature.
 static void detect_base64(const std::string& code, std::vector<AlgoHit>& hits) {
     // The standard alphabet as a string literal
     if (has(code, "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789")) {
@@ -471,13 +536,14 @@ static void detect_base64(const std::string& code, std::vector<AlgoHit>& hits) {
         hits.push_back({"Base64url encode/decode"});
         return;
     }
-    // 6-bit grouping shifts common to all base64 implementations
-    bool has_6bit = (has(code, ">> 6") || has(code, ">>6")) &&
-                    (has(code, "<< 2") || has(code, "<<2") ||
-                     has(code, "<< 4") || has(code, "<<4"));
+    // 6-bit grouping: right shift (>> 6, >> 0xc, >> 0x12, etc.) + 0x3F mask
+    bool has_right_shift = has(code, ">> 6") || has(code, ">>6") ||
+                           has(code, ">> 0x6") || has(code, ">>0x6") ||
+                           has(code, ">> 0xc") || has(code, ">> 0x12");
     bool has_mask = has(code, "& 0x3f") || has(code, "& 0x3F") ||
-                    has(code, "& 63");
-    if (has_6bit && has_mask) {
+                    has(code, "& 63") || has(code, "&0x3f") ||
+                    has(code, "&0x3F");
+    if (has_right_shift && has_mask) {
         hits.push_back({"Base64 encode/decode"});
     }
 }
