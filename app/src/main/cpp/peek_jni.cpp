@@ -184,17 +184,14 @@ static std::string elf_resolve_funcptr(const ElfParseResult& elf, uint64_t va) {
         if (!name.empty()) return name;
     }
 
-    // Path 2: RELA fallback.
-    // On Android ARM64, JNINativeMethod fnPtr fields are often filled by an
-    // R_AARCH64_RELATIVE relocation (type 0x403).  The ELF file bytes at `va`
-    // are 0 (or the raw addend) at this point; the real function VA lives in
-    // the RELA entry's r_addend field.  Scan every SHT_RELA section for an
-    // entry whose r_offset matches `va`.
-    static constexpr uint32_t R_AARCH64_RELATIVE = 0x403;
+    // Path 2: scan every SHT_RELA section for an entry whose r_offset == va.
+    // We handle two cases:
+    //   sym_idx == 0  (R_AARCH64_RELATIVE): r_addend is the target function VA.
+    //   sym_idx  > 0  (R_AARCH64_ABS64, GLOB_DAT, …): look up the symbol name
+    //                 directly from the .dynsym / .dynstr sections.
     for (const auto& sec : elf.sections) {
         if (sec.type != SHT_RELA) continue;
         const size_t entry_size = sizeof(Elf64_Rela);
-        if (sec.size < entry_size) continue;
         uint64_t n = sec.size / entry_size;
         for (uint64_t i = 0; i < n; ++i) {
             uint64_t off = sec.offset + i * entry_size;
@@ -202,10 +199,42 @@ static std::string elf_resolve_funcptr(const ElfParseResult& elf, uint64_t va) {
             const Elf64_Rela* r =
                 reinterpret_cast<const Elf64_Rela*>(elf.data.data() + off);
             if (r->r_offset != va) continue;
-            if (ELF64_R_TYPE(r->r_info) != R_AARCH64_RELATIVE) continue;
-            std::string name = lookup_va_name(
-                elf, static_cast<uint64_t>(r->r_addend));
-            if (!name.empty()) return name;
+
+            uint32_t sym_idx = ELF64_R_SYM(r->r_info);
+            if (sym_idx == 0) {
+                // No symbol — addend is the absolute function VA.
+                std::string name = lookup_va_name(
+                    elf, static_cast<uint64_t>(r->r_addend));
+                if (!name.empty()) return name;
+            } else {
+                // Named-symbol relocation — read the name directly from
+                // the raw .dynsym and .dynstr sections.
+                const ParsedSection* dsym = nullptr;
+                const ParsedSection* dstr = nullptr;
+                for (const auto& s : elf.sections) {
+                    if (s.type == SHT_DYNSYM && !dsym) dsym = &s;
+                    if (s.type == SHT_STRTAB && s.name == ".dynstr" && !dstr) dstr = &s;
+                }
+                if (dsym && dstr) {
+                    uint64_t soff = dsym->offset + sym_idx * sizeof(Elf64_Sym);
+                    if (soff + sizeof(Elf64_Sym) <= elf.data.size()) {
+                        const Elf64_Sym* sym = reinterpret_cast<const Elf64_Sym*>(
+                            elf.data.data() + soff);
+                        uint64_t noff = dstr->offset + sym->st_name;
+                        if (sym->st_name < dstr->size && noff < elf.data.size()) {
+                            std::string name(reinterpret_cast<const char*>(
+                                elf.data.data() + noff));
+                            if (!name.empty()) return name;
+                        }
+                    }
+                }
+                // Also try addend as VA fallback.
+                if (r->r_addend != 0) {
+                    std::string name = lookup_va_name(
+                        elf, static_cast<uint64_t>(r->r_addend));
+                    if (!name.empty()) return name;
+                }
+            }
         }
     }
     return "";

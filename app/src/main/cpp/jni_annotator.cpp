@@ -1258,6 +1258,119 @@ static std::string resolve_xunknown_types(const std::string& code) {
 
 static bool is_generic_varname(const std::string& name);
 
+// True if `line` is a standalone assignment statement to `var`:
+//   <indent>var = <expr>;   (not ==, !=, <=, >=)
+static bool is_stmt_write(const std::string& line, const std::string& var) {
+    size_t p = line.find_first_not_of(" \t");
+    if (p == std::string::npos) return false;
+    if (line.compare(p, var.size(), var) != 0) return false;
+    size_t q = p + var.size();
+    if (q < line.size() && is_id(line[q])) return false; // longer identifier
+    while (q < line.size() && (line[q]==' '||line[q]=='\t')) ++q;
+    if (q >= line.size() || line[q] != '=') return false;
+    if (q + 1 < line.size() && (line[q+1]=='='||line[q+1]=='>'||line[q+1]=='<'||line[q+1]=='!'))
+        return false;
+    return true;
+}
+
+// Remove local variables that are only ever written, never read.
+// Such variables are write-only dead code — either compiler temporaries or
+// implicit return-value registers that Ghidra couldn't attach to "return".
+// Removes both the declaration line and every standalone assignment.
+static std::string remove_writeonly_vars(const std::string& code) {
+    std::vector<std::string> lines = split_lines(code);
+
+    // Collect names of all locally-declared variables.
+    std::vector<std::string> locals;
+    for (const auto& ln : lines) {
+        if (ln.empty() || (ln[0]!=' ' && ln[0]!='\t')) continue;
+        size_t semi = ln.rfind(';');
+        if (semi == std::string::npos) continue;
+        if (ln.find('=') != std::string::npos && ln.find('=') < semi) continue;
+        size_t p0 = ln.find_first_not_of(" \t");
+        if (p0 == std::string::npos) continue;
+        if (ln.compare(p0,3,"for")==0 || ln.compare(p0,2,"if")==0 ||
+            ln.compare(p0,5,"while")==0) continue;
+        size_t ve = semi;
+        while (ve > p0 && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
+        size_t vs = ve;
+        while (vs > p0 && is_id(ln[vs-1])) --vs;
+        if (vs == ve) continue;
+        std::string var(ln, vs, ve - vs);
+        if (var.size() < 2) continue;
+        locals.push_back(var);
+    }
+
+    std::string result = code;
+    for (const auto& var : locals) {
+        const size_t vlen = var.size();
+        bool has_read = false;
+        size_t pos = 0;
+        while ((pos = result.find(var, pos)) != std::string::npos) {
+            bool lok = (pos==0) || !is_id(result[pos-1]);
+            bool rok = (pos+vlen>=result.size()) || !is_id(result[pos+vlen]);
+            if (!lok || !rok) { ++pos; continue; }
+
+            // Find the line containing this occurrence.
+            size_t ls = result.rfind('\n', pos);
+            ls = (ls == std::string::npos) ? 0 : ls + 1;
+            size_t le = result.find('\n', pos);
+            if (le == std::string::npos) le = result.size();
+            std::string ln(result, ls, le - ls);
+
+            // Pure declaration — not a read.
+            if (ln.rfind(';') != std::string::npos &&
+                ln.find('=') == std::string::npos) { pos = le; continue; }
+
+            // Standalone write — only a read if var also appears on the RHS.
+            if (is_stmt_write(ln, var)) {
+                size_t eq = ln.find('=');
+                if (eq != std::string::npos) {
+                    size_t rp = 0;
+                    std::string rhs(ln, eq + 1);
+                    while ((rp = rhs.find(var, rp)) != std::string::npos) {
+                        bool rl = (rp==0)||!is_id(rhs[rp-1]);
+                        bool rr = (rp+vlen>=rhs.size())||!is_id(rhs[rp+vlen]);
+                        if (rl && rr) { has_read = true; break; }
+                        ++rp;
+                    }
+                }
+                pos = le; continue;
+            }
+
+            has_read = true; break;
+        }
+
+        if (has_read) continue;
+
+        // Blank the declaration and all assignment lines.
+        std::vector<std::string> cl = split_lines(result);
+        for (auto& ln : cl) {
+            if (is_stmt_write(ln, var)) { ln = ""; continue; }
+            size_t si = ln.rfind(';');
+            if (si != std::string::npos && ln.find('=') == std::string::npos) {
+                size_t ve = si;
+                while (ve > 0 && (ln[ve-1]==' '||ln[ve-1]=='\t')) --ve;
+                size_t vs = ve;
+                while (vs > 0 && is_id(ln[vs-1])) --vs;
+                if (std::string(ln, vs, ve-vs) == var) { ln = ""; continue; }
+            }
+        }
+        // Rebuild, collapsing consecutive blank lines.
+        result.clear();
+        bool prev_blank = false;
+        for (size_t i = 0; i < cl.size(); ++i) {
+            bool blank = cl[i].empty() ||
+                         cl[i].find_first_not_of(" \t") == std::string::npos;
+            if (i) result += '\n';
+            if (!blank) { result += cl[i]; prev_blank = false; }
+            else if (!prev_blank) { prev_blank = true; }
+            else result.pop_back(); // drop the '\n' just appended
+        }
+    }
+    return result;
+}
+
 static std::string rename_generic_vars(const std::string& code) {
     // --- collect generic vars from declaration lines -----------------------
     // A declaration line looks like (leading whitespace required):
@@ -1487,7 +1600,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V9\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V10\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1509,7 +1622,7 @@ std::string jni_annotate(const std::string& func_name,
         for (auto& wl : wlines) {
             size_t p = wl.find_first_not_of(" \t");
             if (p != std::string::npos &&
-                wl.compare(p, 12, "/* WARNING:") == 0) continue;
+                wl.compare(p, sizeof("/* WARNING:") - 1, "/* WARNING:") == 0) continue;
             if (!result.empty()) result += '\n';
             result += wl;
         }
@@ -1535,7 +1648,7 @@ std::string jni_annotate(const std::string& func_name,
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
     // -----------------------------------------------------------------------
     if (kind == JniKind::NONE) {
-        // ---- U3. Rename surviving generic vars (non-JNI functions) ---------
+        result = remove_writeonly_vars(result);
         return rename_generic_vars(result);
     }
 
@@ -1592,9 +1705,8 @@ std::string jni_annotate(const std::string& func_name,
     // rewrites them to a proper JNINativeMethod array declaration.
     result = collapse_native_methods(result);
 
-    // ---- U3. Rename surviving generic vars (JNI functions) -----------------
-    // Runs last so all JNI-specific names are settled before we fill in the
-    // remaining generic placeholders.
+    // ---- U3. Remove write-only dead variables, then rename survivors --------
+    result = remove_writeonly_vars(result);
     result = rename_generic_vars(result);
 
     return result;
