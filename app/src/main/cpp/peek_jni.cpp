@@ -34,9 +34,11 @@
 #include <cstring>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <set>
 #include <sstream>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #define TAG "PeekJNI"
@@ -54,6 +56,13 @@ struct AnalysisContext {
     int64_t                  binary_id = -1;
     std::string              last_error;
     std::unique_ptr<AnalysisDb> db;
+
+    // Persistent cross-function signature cache.
+    // Loaded once from the DB after binary open; updated lazily as functions
+    // are decompiled. Each entry maps to a PeekFuncSig record injected into
+    // the Ghidra scope before followFlow on every decompile call.
+    std::vector<FuncSignature> sig_cache;
+    bool                     sigs_loaded = false;
 };
 
 static std::string jstr(JNIEnv* env, jstring s) {
@@ -514,6 +523,246 @@ static std::vector<FuncEntry> build_entries(
 }
 
 // ---------------------------------------------------------------------------
+// Built-in stdlib / libc / C++ runtime prototype table
+//
+// Source: well-known AArch64/AAPCS64 signatures for the most common runtime
+// functions.  These are applied on top of symbol-derived records so callers
+// always get correct prototypes even when the ELF has stripped symbols.
+//
+// Type vocabulary: void / bool / int / uint / long / ulong / float / double /
+//   ptr (= void*) / void* / char* / size_t / unknown
+// ---------------------------------------------------------------------------
+
+struct StdlibProto {
+    const char* name;
+    const char* return_type;
+    int         param_count;
+    const char* params_csv;
+};
+
+static const StdlibProto kStdlibProtos[] = {
+    // --- memory ---
+    { "malloc",        "void*",  1, "size_t"                       },
+    { "calloc",        "void*",  2, "size_t,size_t"                },
+    { "realloc",       "void*",  2, "void*,size_t"                 },
+    { "free",          "void",   1, "void*"                        },
+    { "aligned_alloc", "void*",  2, "size_t,size_t"                },
+    { "mmap",          "void*",  6, "void*,size_t,int,int,int,long"},
+    { "munmap",        "int",    2, "void*,size_t"                 },
+    { "memcpy",        "void*",  3, "void*,void*,size_t"           },
+    { "memmove",       "void*",  3, "void*,void*,size_t"           },
+    { "memset",        "void*",  3, "void*,int,size_t"             },
+    { "memcmp",        "int",    3, "void*,void*,size_t"           },
+    { "memchr",        "void*",  3, "void*,int,size_t"             },
+    { "bzero",         "void",   2, "void*,size_t"                 },
+    // --- string ---
+    { "strlen",        "size_t", 1, "char*"                        },
+    { "strnlen",       "size_t", 2, "char*,size_t"                 },
+    { "strcmp",        "int",    2, "char*,char*"                  },
+    { "strncmp",       "int",    3, "char*,char*,size_t"           },
+    { "strcasecmp",    "int",    2, "char*,char*"                  },
+    { "strncasecmp",   "int",    3, "char*,char*,size_t"           },
+    { "strcpy",        "char*",  2, "char*,char*"                  },
+    { "strncpy",       "char*",  3, "char*,char*,size_t"           },
+    { "strcat",        "char*",  2, "char*,char*"                  },
+    { "strncat",       "char*",  3, "char*,char*,size_t"           },
+    { "strchr",        "char*",  2, "char*,int"                    },
+    { "strrchr",       "char*",  2, "char*,int"                    },
+    { "strstr",        "char*",  2, "char*,char*"                  },
+    { "strtok",        "char*",  2, "char*,char*"                  },
+    { "strtol",        "long",   3, "char*,ptr,int"                },
+    { "strtoul",       "ulong",  3, "char*,ptr,int"                },
+    { "strtoll",       "long",   3, "char*,ptr,int"                },
+    { "strtoull",      "ulong",  3, "char*,ptr,int"                },
+    { "strtod",        "double", 2, "char*,ptr"                    },
+    { "strtof",        "float",  2, "char*,ptr"                    },
+    { "snprintf",      "int",    3, "char*,size_t,char*"           },
+    { "sprintf",       "int",    2, "char*,char*"                  },
+    { "printf",        "int",    1, "char*"                        },
+    { "fprintf",       "int",    2, "ptr,char*"                    },
+    { "vsnprintf",     "int",    4, "char*,size_t,char*,ptr"       },
+    { "vsprintf",      "int",    3, "char*,char*,ptr"              },
+    { "sscanf",        "int",    2, "char*,char*"                  },
+    // --- I/O ---
+    { "fopen",         "ptr",    2, "char*,char*"                  },
+    { "fclose",        "int",    1, "ptr"                          },
+    { "fread",         "size_t", 4, "void*,size_t,size_t,ptr"      },
+    { "fwrite",        "size_t", 4, "void*,size_t,size_t,ptr"      },
+    { "fseek",         "int",    3, "ptr,long,int"                 },
+    { "ftell",         "long",   1, "ptr"                          },
+    { "fflush",        "int",    1, "ptr"                          },
+    { "fgets",         "char*",  3, "char*,int,ptr"                },
+    { "fputs",         "int",    2, "char*,ptr"                    },
+    { "fgetc",         "int",    1, "ptr"                          },
+    { "fputc",         "int",    2, "int,ptr"                      },
+    { "open",          "int",    2, "char*,int"                    },
+    { "read",          "long",   3, "int,void*,size_t"             },
+    { "write",         "long",   3, "int,void*,size_t"             },
+    { "close",         "int",    1, "int"                          },
+    // --- process / env ---
+    { "exit",          "void",   1, "int"                          },
+    { "abort",         "void",   0, ""                             },
+    { "getenv",        "char*",  1, "char*"                        },
+    { "putenv",        "int",    1, "char*"                        },
+    { "system",        "int",    1, "char*"                        },
+    { "fork",          "int",    0, ""                             },
+    { "execve",        "int",    3, "char*,ptr,ptr"                },
+    { "waitpid",       "int",    3, "int,ptr,int"                  },
+    // --- math ---
+    { "abs",           "int",    1, "int"                          },
+    { "labs",          "long",   1, "long"                         },
+    { "llabs",         "long",   1, "long"                         },
+    { "pow",           "double", 2, "double,double"                },
+    { "sqrt",          "double", 1, "double"                       },
+    { "floor",         "double", 1, "double"                       },
+    { "ceil",          "double", 1, "double"                       },
+    { "fabs",          "double", 1, "double"                       },
+    { "sin",           "double", 1, "double"                       },
+    { "cos",           "double", 1, "double"                       },
+    { "log",           "double", 1, "double"                       },
+    { "log2",          "double", 1, "double"                       },
+    { "log10",         "double", 1, "double"                       },
+    // --- C++ runtime ---
+    { "_Znwm",         "void*",  1, "size_t"                       }, // operator new(size_t)
+    { "_Znam",         "void*",  1, "size_t"                       }, // operator new[](size_t)
+    { "_ZdlPv",        "void",   1, "void*"                        }, // operator delete(void*)
+    { "_ZdaPv",        "void",   1, "void*"                        }, // operator delete[](void*)
+    { "_ZdlPvm",       "void",   2, "void*,size_t"                 }, // operator delete(void*,size_t)
+    { "__cxa_throw",   "void",   3, "void*,void*,void*"            },
+    { "__cxa_allocate_exception", "void*", 1, "size_t"             },
+    { "__cxa_begin_catch",  "void*",  1, "void*"                   },
+    { "__cxa_end_catch",    "void",   0, ""                        },
+    { "__cxa_guard_acquire","int",    1, "ptr"                      },
+    { "__cxa_guard_release","void",   1, "ptr"                      },
+    // --- pthread ---
+    { "pthread_create",  "int",  4, "ptr,ptr,ptr,void*"            },
+    { "pthread_join",    "int",  2, "ulong,ptr"                    },
+    { "pthread_mutex_lock",   "int", 1, "ptr"                      },
+    { "pthread_mutex_unlock", "int", 1, "ptr"                      },
+    { "pthread_mutex_init",   "int", 2, "ptr,ptr"                  },
+    { "pthread_mutex_destroy","int", 1, "ptr"                      },
+    // --- Android-specific ---
+    { "__android_log_print", "int", 3, "int,char*,char*"           },
+    { "__android_log_write", "int", 3, "int,char*,char*"           },
+    { "AAssetManager_fromJava", "ptr", 2, "ptr,ptr"                },
+    { "AAsset_read",     "int",  3, "ptr,void*,size_t"             },
+    { "AAsset_close",    "void", 1, "ptr"                          },
+};
+static const size_t kStdlibProtoCount =
+    sizeof(kStdlibProtos) / sizeof(kStdlibProtos[0]);
+
+// Build a name→proto map for O(1) lookup during signature population.
+static std::unordered_map<std::string, const StdlibProto*> g_stdlib_map;
+static std::once_flag g_stdlib_map_flag;
+
+static void ensure_stdlib_map() {
+    std::call_once(g_stdlib_map_flag, []() {
+        for (size_t i = 0; i < kStdlibProtoCount; ++i)
+            g_stdlib_map[kStdlibProtos[i].name] = &kStdlibProtos[i];
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Signature cache management
+//
+// populate_sig_cache() builds the per-binary FuncSignature vector from:
+//   1. All functions discovered in run_analysis (name + address only)
+//   2. All symbols (name + address only)
+//   3. stdlib overrides — apply known prototypes whenever a function's name
+//      matches a stdlib entry (strips any leading "j_" thunk prefix first)
+//
+// The result is stored in the DB (func_signatures table) for persistence and
+// also kept in ctx.sig_cache for use throughout the session.
+// ---------------------------------------------------------------------------
+
+static void populate_sig_cache(AnalysisContext& ctx,
+                                const ElfParseResult& elf)
+{
+    if (ctx.binary_id < 0) return;
+    ensure_stdlib_map();
+
+    // Build a map: address → FuncSignature (for deduplication).
+    std::map<uint64_t, FuncSignature> sigmap;
+
+    // --- Source 1: ELF-discovered functions (names from symbol table) ---
+    for (const auto& fn : elf.functions) {
+        if (fn.address == 0 || fn.name.empty()) continue;
+        FuncSignature s;
+        s.address = fn.address;
+        s.name    = fn.name;
+        s.source  = "symbol";
+        sigmap[fn.address] = std::move(s);
+    }
+
+    // --- Source 2: ELF symbols (may add entries not in elf.functions) ---
+    for (const auto& sym : elf.symbols) {
+        if (sym.address == 0 || sym.name.empty()) continue;
+        if (sigmap.count(sym.address)) continue;  // function already added
+        FuncSignature s;
+        s.address = sym.address;
+        s.name    = sym.name;
+        s.source  = "symbol";
+        sigmap[sym.address] = std::move(s);
+    }
+
+    // --- Source 3: apply stdlib prototypes where name matches ---
+    for (auto& [addr, sig] : sigmap) {
+        // Strip thunk prefix for lookup ("j_malloc" → "malloc").
+        std::string lookup_name = sig.name;
+        if (lookup_name.size() > 2 &&
+            lookup_name[0] == 'j' && lookup_name[1] == '_')
+            lookup_name = lookup_name.substr(2);
+
+        auto it = g_stdlib_map.find(lookup_name);
+        if (it != g_stdlib_map.end()) {
+            const StdlibProto* p = it->second;
+            sig.return_type = p->return_type ? p->return_type : "";
+            sig.param_count = p->param_count;
+            sig.params_csv  = p->params_csv ? p->params_csv : "";
+            sig.source      = "stdlib";
+        }
+    }
+
+    // Build vector and persist to DB in one batch.
+    std::vector<FuncSignature> sigs;
+    sigs.reserve(sigmap.size());
+    for (auto& [addr, sig] : sigmap)
+        sigs.push_back(std::move(sig));
+
+    ctx.db->store_signatures(ctx.binary_id, sigs);
+    ctx.sig_cache   = sigs;
+    ctx.sigs_loaded = true;
+
+    LOGI("Signature cache: %zu entries for binary_id=%lld",
+         sigs.size(), (long long)ctx.binary_id);
+}
+
+// Ensure the sig_cache is populated (load from DB if not yet done).
+// Called on every decompile request to handle the case where the binary
+// was already in the DB cache (run_analysis was skipped).
+static void ensure_sigs_loaded(AnalysisContext& ctx) {
+    if (ctx.sigs_loaded) return;
+    if (ctx.binary_id < 0) return;
+
+    ctx.sig_cache   = ctx.db->get_signatures(ctx.binary_id);
+    ctx.sigs_loaded = true;
+
+    // If the DB has no signatures yet (binary opened from cache without
+    // run_analysis, or very old DB entry), re-parse the ELF and populate.
+    if (ctx.sig_cache.empty()) {
+        LOGI("No signatures in DB for binary_id=%lld — populating from ELF",
+             (long long)ctx.binary_id);
+        ElfParseResult elf = elf_parse(ctx.file_path);
+        if (elf.ok) {
+            populate_sig_cache(ctx, elf);
+        }
+    }
+
+    LOGI("Loaded %zu signatures from DB for binary_id=%lld",
+         ctx.sig_cache.size(), (long long)ctx.binary_id);
+}
+
+// ---------------------------------------------------------------------------
 // Full analysis pipeline
 // ---------------------------------------------------------------------------
 
@@ -839,6 +1088,12 @@ static bool run_analysis(AnalysisContext& ctx) {
 
     LOGI("Analysis complete: binary_id=%lld, functions=%zu, xrefs=%zu",
          (long long)ctx.binary_id, all_entries.size(), all_xrefs.size());
+
+    // Build and persist the cross-function signature cache from the freshly
+    // analysed ELF.  This only runs for new binaries; cache-hit binaries load
+    // signatures from the DB lazily on first decompile (ensure_sigs_loaded).
+    populate_sig_cache(ctx, elf);
+
     return true;
 }
 
@@ -1114,6 +1369,11 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         return env->NewStringUTF(stub.c_str());
     }
 
+    // Ensure the cross-function signature cache is loaded.  For binaries that
+    // were already in the DB cache (run_analysis skipped), signatures are read
+    // from the DB here on first decompile rather than at binary-open time.
+    ensure_sigs_loaded(*ctx);
+
     // Re-parse ELF to obtain raw bytes for the function.
     ElfParseResult elf = elf_parse(ctx->file_path);
     if (!elf.ok) {
@@ -1134,11 +1394,12 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
                             : fn.size;
     // Never exceed the ELF-declared function size.
     if (code_len > fn.size) code_len = fn.size;
-    LOGI("Decompiling %s addr=0x%llx fn.size=%llu code_len=%llu",
+    LOGI("Decompiling %s addr=0x%llx fn.size=%llu code_len=%llu sigs=%zu",
          fn.name.c_str(),
          (unsigned long long)fn.address,
          (unsigned long long)fn.size,
-         (unsigned long long)code_len);
+         (unsigned long long)code_len,
+         ctx->sig_cache.size());
 
     const uint8_t* data = va_to_ptr(elf, fn.address, code_len);
     if (!data) {
@@ -1152,15 +1413,32 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     tmp_ss << ctx->tmp_dir << "/decomp_" << std::hex << (int64_t)func_id << ".bin";
     std::string tmp_path = tmp_ss.str();
 
-    char* result_cstr = peek_decompile_bytes(
-        data, (size_t)code_len, fn.name.c_str(), tmp_path.c_str(),
-        (uint64_t)fn.address);
+    // Build the flat C-struct array that peek_decompile_bytes_v2 accepts.
+    // We keep the strings alive in sig_cache (which owns them) — the PeekFuncSig
+    // pointers are valid for the duration of this call.
+    std::vector<PeekFuncSig> c_sigs;
+    c_sigs.reserve(ctx->sig_cache.size());
+    for (const auto& s : ctx->sig_cache) {
+        if (s.address == fn.address) continue;  // skip self
+        PeekFuncSig cs;
+        cs.address     = s.address;
+        cs.name        = s.name.c_str();
+        cs.return_type = s.return_type.empty() ? nullptr : s.return_type.c_str();
+        cs.param_count = s.param_count;
+        cs.params_csv  = s.params_csv.empty() ? nullptr : s.params_csv.c_str();
+        c_sigs.push_back(cs);
+    }
+
+    PeekInferredSig inferred = {};
+    char* result_cstr = peek_decompile_bytes_v2(
+        data, (size_t)code_len,
+        fn.name.c_str(), tmp_path.c_str(), (uint64_t)fn.address,
+        c_sigs.empty() ? nullptr : c_sigs.data(), c_sigs.size(),
+        &inferred);
 
     if (!result_cstr) {
         const char* bridge_err = peek_decompile_get_last_error();
         LOGE("Decompile returned null for %s — %s", fn.name.c_str(), bridge_err);
-        // Store the stage-specific error so the UI can surface it in debug builds
-        // via nativeGetLastError().
         ctx->last_error = bridge_err ? bridge_err : "decompile bridge returned null";
         return env->NewStringUTF("");
     }
@@ -1180,6 +1458,50 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     // 3. Store with a version tag so stale cache entries are auto-detected.
     ctx->db->store_pseudocode((int64_t)func_id, CACHE_TAG + result);
     LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
+
+    // 4. Lazy learning — if the decompiler inferred a prototype for this
+    //    function, store it in the signature cache and DB so future callers
+    //    (functions that call this one) benefit from the improved types.
+    if (inferred.is_set) {
+        // Only update if we don't already have a high-trust entry for this
+        // function (stdlib entries have already been applied at populate time).
+        bool already_good = false;
+        for (const auto& s : ctx->sig_cache) {
+            if (s.address == fn.address &&
+                (s.source == "stdlib" || s.source == "il2cpp")) {
+                already_good = true;
+                break;
+            }
+        }
+        if (!already_good) {
+            FuncSignature infsig;
+            infsig.address     = fn.address;
+            infsig.name        = fn.name;
+            infsig.return_type = inferred.return_type;
+            infsig.params_csv  = inferred.params_csv;
+            infsig.param_count = inferred.param_count;
+            infsig.source      = "inferred";
+
+            // Update or insert in the in-memory cache.
+            bool found = false;
+            for (auto& s : ctx->sig_cache) {
+                if (s.address == fn.address) {
+                    s = infsig;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found) ctx->sig_cache.push_back(infsig);
+
+            // Persist to DB.
+            ctx->db->store_signature(ctx->binary_id, infsig);
+
+            LOGI("Stored inferred sig for %s → %s(%s)",
+                 fn.name.c_str(),
+                 infsig.return_type.c_str(),
+                 infsig.params_csv.c_str());
+        }
+    }
 
     return env->NewStringUTF(result.c_str());
 }
