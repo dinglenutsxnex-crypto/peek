@@ -282,66 +282,117 @@ static const StringArgSpec kStringArgFuncs[] = {
     {"NewStringUTF",      0},
 };
 
-// Resolve Ghidra data references and JNI string arguments INLINE.
+// Resolve Ghidra data references and function call arguments INLINE.
 //
-// Pass 1 — xRam<hex16>: replaces the entire token with "string" if the
-//   address resolves to printable ASCII.  If not resolvable, keeps the
-//   original token unchanged so the user can still see the address.
+// Pass 1 — *Ram<hex16>: Ghidra emits xRam/iRam/uRam/bRam/lRam/pRam<addr>
+//   for any global memory access whose address is statically known.
+//   Resolution order: C-string at addr → symbol name at addr → funcptr at addr.
+//   If nothing resolves, the token is kept as-is.
 //
-// Pass 2 — JNI string args: after vtable resolution, patterns like
-//   ->FindClass(env, 0x470e) are found; if the hex resolves to a string
-//   the literal 0x... is replaced with "string" inline.
+// Pass 2 — JNI vtable string args: ->FindClass(env, 0x470e) etc.
+//
+// Pass 3 — direct call hex args: funcname(0xHEX, ...) where the hex value
+//   falls inside a known ELF section.  Resolves to: "string" | &sym_name |
+//   function_name.  Skips small constants (< 0x1000) and values outside any
+//   mapped section so integer flags/sizes are never mis-annotated.
 static std::string resolve_data_refs(const std::string& code,
                                       const ElfParseResult& elf) {
-    // ---- Pass 1: xRam<16-digit-hex> → "string" --------------------------
+    // Pre-build addr→name map from symbols + functions (exclude sub_* / j_*).
+    std::unordered_map<uint64_t, std::string> sym_map;
+    for (const auto& sym : elf.symbols) {
+        if (sym.address == 0 || sym.name.empty()) continue;
+        if (sym.name.size() > 4 && sym.name[3] == '_' &&
+            (sym.name[0] == 's' || sym.name[0] == 'j')) continue;
+        sym_map.emplace(sym.address, sym.name);
+    }
+    for (const auto& fn : elf.functions) {
+        if (fn.address == 0 || fn.name.empty()) continue;
+        if (fn.name.size() > 4 && fn.name[3] == '_' &&
+            (fn.name[0] == 's' || fn.name[0] == 'j')) continue;
+        sym_map.emplace(fn.address, fn.name);  // prefer existing entry
+    }
+
+    // Section set for "is this VA in any mapped section?" used by Pass 3.
+    struct SecRange { uint64_t base, end; bool exec; };
+    std::vector<SecRange> sec_ranges;
+    for (const auto& sec : elf.sections) {
+        if (sec.size == 0 || sec.address == 0) continue;
+        sec_ranges.push_back({sec.address, sec.address + sec.size,
+                               sec.is_executable()});
+    }
+    auto va_section = [&](uint64_t va) -> const SecRange* {
+        for (const auto& r : sec_ranges)
+            if (va >= r.base && va < r.end) return &r;
+        return nullptr;
+    };
+
+    // Resolve a single VA to the best printable representation.
+    // Returns "" if nothing useful found.
+    // data_prefix: prefix to emit before data symbol names (e.g. "&")
+    auto resolve_va = [&](uint64_t va, bool allow_data_sym,
+                           const char* data_prefix = "&") -> std::string {
+        if (va < 0x100) return "";  // definitely an integer constant
+        // 1. C string
+        std::string s = elf_read_cstring(elf, va);
+        if (!s.empty()) return "\"" + escape_for_literal(s) + "\"";
+        // 2. Named symbol at this address
+        auto it = sym_map.find(va);
+        if (it != sym_map.end()) {
+            const SecRange* sr = va_section(va);
+            if (sr && sr->exec) return it->second;           // function name
+            if (allow_data_sym) return std::string(data_prefix) + it->second;
+        }
+        // 3. Function pointer stored at this address (GOT/data slot)
+        std::string fn = elf_resolve_funcptr(elf, va);
+        if (!fn.empty()) return fn;
+        return "";
+    };
+
+    // ---- Pass 1: *Ram<16-digit-hex> → resolved or kept as-is ------------
     std::string out;
     out.reserve(code.size());
     {
-        const char   XPFX[]    = "xRam";
-        const size_t XPFX_LEN  = 4;
         size_t pos = 0;
         while (pos < code.size()) {
-            size_t f = code.find(XPFX, pos);
+            // Look for "Ram" preceded by exactly one lowercase letter at a
+            // word boundary — covers xRam/iRam/uRam/bRam/lRam/pRam/sRam.
+            size_t f = code.find("Ram", pos);
             if (f == std::string::npos) { out.append(code, pos, std::string::npos); break; }
-            // Word boundary before "xRam"
-            if (f > 0 && (std::isalnum((unsigned char)code[f-1]) || code[f-1]=='_')) {
-                out.append(code, pos, f - pos + 1);
-                pos = f + 1;
-                continue;
+
+            // Must be preceded by a single lowercase letter at a word boundary.
+            if (f < 1 || !std::islower((unsigned char)code[f-1])) {
+                out.append(code, pos, f - pos + 1); pos = f + 1; continue;
             }
-            size_t p = f + XPFX_LEN;
+            size_t token_start = f - 1;
+            if (token_start > 0 &&
+                (std::isalnum((unsigned char)code[token_start-1]) || code[token_start-1]=='_')) {
+                out.append(code, pos, f - pos + 1); pos = f + 1; continue;
+            }
+
+            // Read the 16 hex digits following "Ram".
+            size_t p = f + 3;
             size_t hex_start = p;
             while (p < code.size() && std::isxdigit((unsigned char)code[p])) ++p;
             if (p - hex_start != 16) {
-                out.append(code, pos, f - pos + 1);
-                pos = f + 1;
-                continue;
+                out.append(code, pos, f - pos + 1); pos = f + 1; continue;
             }
+
             uint64_t va = std::strtoull(
                 std::string(code, hex_start, 16).c_str(), nullptr, 16);
-            std::string s = elf_read_cstring(elf, va);
-            if (!s.empty()) {
-                // Address holds (or points to) a C string — emit "string".
-                out.append(code, pos, f - pos);
-                out += '"';
-                out += escape_for_literal(s);
-                out += '"';
+
+            std::string replacement = resolve_va(va, /*allow_data_sym=*/true, "");
+            out.append(code, pos, token_start - pos);
+            if (!replacement.empty()) {
+                out += replacement;
             } else {
-                // Address may hold a function pointer — try to resolve it to
-                // a symbol name (e.g. the fnPtr field of JNINativeMethod).
-                std::string fn = elf_resolve_funcptr(elf, va);
-                if (!fn.empty()) {
-                    out.append(code, pos, f - pos);
-                    out += fn;
-                } else {
-                    out.append(code, pos, p - pos); // keep xRam token as-is
-                }
+                // Keep the original *Ram<addr> token unchanged.
+                out.append(code, token_start, p - token_start);
             }
             pos = p;
         }
     }
 
-    // ---- Pass 2: JNI string args 0x<hex> → "string" ---------------------
+    // ---- Pass 2: JNI vtable string args 0x<hex> → "string" --------------
     std::string out2;
     out2.reserve(out.size());
     {
@@ -389,19 +440,16 @@ static std::string resolve_data_refs(const std::string& code,
 
                 if (should_resolve && p + 1 < out.size() &&
                     out[p] == '0' && (out[p+1] == 'x' || out[p+1] == 'X')) {
-                    size_t hex_start = p + 2;
-                    size_t q = hex_start;
+                    size_t hstart = p + 2;
+                    size_t q = hstart;
                     while (q < out.size() && std::isxdigit((unsigned char)out[q])) ++q;
                     uint64_t va = std::strtoull(
-                        std::string(out, hex_start, q - hex_start).c_str(), nullptr, 16);
+                        std::string(out, hstart, q - hstart).c_str(), nullptr, 16);
                     std::string s = elf_read_cstring(elf, va);
                     if (!s.empty()) {
-                        // Inline replace: drop 0x..., emit "string"
-                        out2 += '"';
-                        out2 += escape_for_literal(s);
-                        out2 += '"';
+                        out2 += '"'; out2 += escape_for_literal(s); out2 += '"';
                     } else {
-                        out2.append(out, p, q - p); // keep original hex
+                        out2.append(out, p, q - p);
                     }
                     p = q;
                 } else {
@@ -412,7 +460,110 @@ static std::string resolve_data_refs(const std::string& code,
         }
     }
 
-    return out2;
+    // ---- Pass 3: hex literal args in direct function calls → names -------
+    // Handles: funcname(0xhex, 0xhex, ...)
+    // Only resolves hex values >= 0x1000 that fall inside a known ELF section.
+    // This covers cases like:
+    //   pthread_key_create(0xd3628, 0x6da30)  →  pthread_key_create(&g_key, dtor)
+    //   __cxa_atexit(0x67cc4, 0xc0138, ...)   →  __cxa_atexit(cleanup, &g_ctx, ...)
+    std::string out3;
+    out3.reserve(out2.size());
+    {
+        size_t pos = 0;
+        while (pos < out2.size()) {
+            // Find an identifier followed immediately by '(' at word boundary.
+            size_t id_start = pos;
+            // Advance to next identifier-start character
+            while (id_start < out2.size() &&
+                   !std::isalpha((unsigned char)out2[id_start]) && out2[id_start] != '_')
+                ++id_start;
+            if (id_start >= out2.size()) {
+                out3.append(out2, pos, std::string::npos);
+                break;
+            }
+
+            // Must not be inside a ->method call (handled by Pass 2 already)
+            // and must not be inside a (*ptr) expression.
+            // Quick check: ensure char before id_start is not '>' or alnum/'_'
+            // (the latter would mean we caught the tail of another identifier).
+            bool bad_prefix = false;
+            if (id_start > 0) {
+                char prev = out2[id_start - 1];
+                if (prev == '>' || std::isalnum((unsigned char)prev) || prev == '_')
+                    bad_prefix = true;
+            }
+            if (bad_prefix) {
+                out3.append(out2, pos, id_start - pos + 1);
+                pos = id_start + 1;
+                continue;
+            }
+
+            // Read identifier
+            size_t id_end = id_start;
+            while (id_end < out2.size() &&
+                   (std::isalnum((unsigned char)out2[id_end]) || out2[id_end]=='_'))
+                ++id_end;
+            if (id_end >= out2.size() || out2[id_end] != '(') {
+                out3.append(out2, pos, id_end - pos);
+                pos = id_end;
+                continue;
+            }
+
+            // Emit everything up to and including '('
+            out3.append(out2, pos, id_end - pos + 1);
+            pos = id_end + 1;
+
+            // Parse arguments: resolve 0x<hex> args that are in-section addresses.
+            int  paren_depth = 1;
+            while (pos < out2.size() && paren_depth > 0) {
+                char c = out2[pos];
+                if (c == '(') { ++paren_depth; out3 += c; ++pos; continue; }
+                if (c == ')') { --paren_depth; out3 += c; ++pos; continue; }
+                if (c == '"') {
+                    // Skip string literals untouched
+                    out3 += c; ++pos;
+                    while (pos < out2.size() && out2[pos] != '"') {
+                        if (out2[pos] == '\\') { out3 += out2[pos++]; }
+                        out3 += out2[pos++];
+                    }
+                    if (pos < out2.size()) { out3 += out2[pos++]; }
+                    continue;
+                }
+                // Look for 0x<hex> at argument position (depth==1)
+                if (paren_depth == 1 && c == '0' &&
+                    pos + 1 < out2.size() &&
+                    (out2[pos+1] == 'x' || out2[pos+1] == 'X')) {
+                    size_t hstart = pos + 2;
+                    size_t q = hstart;
+                    while (q < out2.size() && std::isxdigit((unsigned char)out2[q])) ++q;
+                    size_t hex_digits = q - hstart;
+                    uint64_t va = std::strtoull(
+                        std::string(out2, hstart, hex_digits).c_str(), nullptr, 16);
+
+                    // Only resolve if large enough to be an address AND in a section.
+                    bool emitted = false;
+                    if (va >= 0x1000 && hex_digits >= 4 && va_section(va)) {
+                        const SecRange* sr = va_section(va);
+                        // For code-section VAs: emit function name directly.
+                        // For data-section VAs: emit &sym_name or "string".
+                        std::string resolved = resolve_va(
+                            va, /*allow_data_sym=*/true,
+                            sr && sr->exec ? "" : "&");
+                        if (!resolved.empty()) {
+                            out3 += resolved;
+                            emitted = true;
+                        }
+                    }
+                    if (!emitted) out3.append(out2, pos, q - pos);
+                    pos = q;
+                    continue;
+                }
+                out3 += c; ++pos;
+            }
+        }
+    }
+
+    return out3;
 }
 
 // Aggregate VA bounds of all executable sections.
