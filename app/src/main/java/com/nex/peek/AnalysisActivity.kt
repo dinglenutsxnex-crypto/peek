@@ -103,12 +103,15 @@ class AnalysisActivity : AppCompatActivity() {
         activeTabs = loadTabPrefs()
         updateTabs()
 
-        // Dismiss floating dropdown when tapping outside
+        // Dismiss floating dropdowns when tapping outside
         b.rootContainer.setOnClickListener {
-            if (b.viewOptionsContainer.visibility == View.VISIBLE) {
-                b.viewOptionsContainer.visibility = View.GONE
-            }
+            b.viewOptionsContainer.visibility = View.GONE
+            b.downloadContainer.visibility = View.GONE
         }
+
+        b.dlHex.setOnClickListener { b.downloadContainer.visibility = View.GONE; initiateDownload(BulkDownloader.DownloadType.HEX) }
+        b.dlAsm.setOnClickListener { b.downloadContainer.visibility = View.GONE; initiateDownload(BulkDownloader.DownloadType.ASM) }
+        b.dlPseudocode.setOnClickListener { b.downloadContainer.visibility = View.GONE; initiateDownload(BulkDownloader.DownloadType.PSEUDOCODE) }
 
         funcAdapter = FunctionCompactAdapter { fn ->
             // Delay content switch to sync with the click ripple animation
@@ -183,24 +186,13 @@ class AnalysisActivity : AppCompatActivity() {
     // ── Download floating checklist (below toolbar, right-aligned) ─────────────
 
     private fun showDownloadMenu() {
-        // Reuse the same floating container pattern but for download options.
-        // We use a simple PopupWindow-style approach by showing a small dialog.
-        // Since download is a one-shot action (not a checklist), keep it as a
-        // floating card that appears below the toolbar on the right.
-        val popup = android.widget.PopupMenu(this, b.toolbar)
-        popup.menu.add(0, DL_HEX,        0, "Download Hex")
-        popup.menu.add(0, DL_ASM,        1, "Download Disassembly")
-        popup.menu.add(0, DL_PSEUDOCODE, 2, "Download Pseudocode")
-        popup.gravity = android.view.Gravity.END
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                DL_HEX        -> { initiateDownload(BulkDownloader.DownloadType.HEX); true }
-                DL_ASM        -> { initiateDownload(BulkDownloader.DownloadType.ASM); true }
-                DL_PSEUDOCODE -> { initiateDownload(BulkDownloader.DownloadType.PSEUDOCODE); true }
-                else          -> false
-            }
+        if (b.downloadContainer.visibility == View.VISIBLE) {
+            b.downloadContainer.visibility = View.GONE
+        } else {
+            b.viewOptionsContainer.visibility = View.GONE
+            b.downloadContainer.visibility = View.VISIBLE
+            b.downloadContainer.bringToFront()
         }
-        popup.show()
     }
 
     private fun initiateDownload(type: BulkDownloader.DownloadType) {
@@ -270,9 +262,9 @@ class AnalysisActivity : AppCompatActivity() {
         if (b.viewOptionsContainer.visibility == View.VISIBLE) {
             b.viewOptionsContainer.visibility = View.GONE
         } else {
+            b.downloadContainer.visibility = View.GONE
             setupViewOptionsList()
             b.viewOptionsContainer.visibility = View.VISIBLE
-            // Bring to front so it floats above everything
             b.viewOptionsContainer.bringToFront()
         }
     }
