@@ -30,6 +30,11 @@ class PseudocodeFragment : Fragment() {
     private val vm: AnalysisViewModel by activityViewModels()
     private var currentFunc: FunctionInfo? = null
 
+    companion object {
+        // Delay to sync with click animation (Material ripple duration ~200ms)
+        private const val ANIMATION_DELAY_MS = 200L
+    }
+
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
     ): View {
@@ -52,29 +57,32 @@ class PseudocodeFragment : Fragment() {
         b.btnCopy.visibility = View.GONE
         b.progressBar.visibility = View.VISIBLE
 
-        lifecycleScope.launch {
-            val handle = AnalysisSession.get()
-            var code = ""
-            var failReason = ""
-            withContext(Dispatchers.IO) {
-                code = PeekNative.decompileFunction(handle, fn.id)
+        // Add animation delay to sync with click feedback
+        Handler(Looper.getMainLooper()).postDelayed({
+            lifecycleScope.launch {
+                val handle = AnalysisSession.get()
+                var code = ""
+                var failReason = ""
+                withContext(Dispatchers.IO) {
+                    code = PeekNative.decompileFunction(handle, fn.id)
+                    if (code.isEmpty()) {
+                        failReason = PeekNative.getLastError(handle)
+                    }
+                }
+                b.progressBar.visibility = View.GONE
                 if (code.isEmpty()) {
-                    failReason = PeekNative.getLastError(handle)
-                }
-            }
-            b.progressBar.visibility = View.GONE
-            if (code.isEmpty()) {
-                b.tvEmpty.text = if (failReason.isNotEmpty()) {
-                    "Decompilation failed\n\n$failReason"
+                    b.tvEmpty.text = if (failReason.isNotEmpty()) {
+                        "Decompilation failed\n\n$failReason"
+                    } else {
+                        "Decompilation unavailable"
+                    }
+                    b.tvEmpty.visibility = View.VISIBLE
                 } else {
-                    "Decompilation unavailable"
+                    b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
+                    b.btnCopy.visibility = View.VISIBLE
                 }
-                b.tvEmpty.visibility = View.VISIBLE
-            } else {
-                b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
-                b.btnCopy.visibility = View.VISIBLE
             }
-        }
+        }, ANIMATION_DELAY_MS)
     }
 
     private fun copyToClipboard() {

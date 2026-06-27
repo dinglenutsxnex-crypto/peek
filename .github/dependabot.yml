@@ -1,0 +1,25 @@
+# Dependabot — scoped narrowly to only our direct dependency groups.
+# We control the dependency list tightly on purpose; automated churn
+# should be minimal by construction.
+version: 2
+updates:
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3
+    groups:
+      androidx:
+        patterns:
+          - "androidx.*"
+          - "com.google.android.material*"
+    ignore:
+      # Capstone and SQLite are vendored via CMake FetchContent — not Gradle deps.
+      - dependency-name: "*capstone*"
+      - dependency-name: "*sqlite*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "monthly"
+    open-pull-requests-limit: 3

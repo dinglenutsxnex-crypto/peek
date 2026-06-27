@@ -14,13 +14,12 @@
 // ---------------------------------------------------------------------------
 
 struct DbFunction {
-    int64_t     id          = -1;
-    uint64_t    address     = 0;
-    uint64_t    size        = 0;
+    int64_t     id;
+    uint64_t    address;
+    uint64_t    size;
     std::string name;
-    uint64_t    end_address = 0;
-    int         kind        = 1;   // 0=local(sub_), 1=named, 2=thunk(j_)
-    std::string pseudocode;        // empty until decompiled
+    uint64_t    end_address;
+    int         kind = 1;   // 0=local(sub_), 1=named, 2=thunk(j_)
 };
 
 struct DbInstruction {
@@ -43,22 +42,6 @@ struct DbXref {
     uint64_t    from_address;
     uint64_t    to_address;
     std::string ref_type;   // "call" / "branch" / "data"
-};
-
-// Lightweight cross-function signature record.
-// Only metadata — no machine code, no p-code, no lifted bodies.
-// Keyed by (binary_id, address); survives across sessions in SQLite.
-struct FuncSignature {
-    uint64_t    address     = 0;
-    std::string name;
-    // Simplified type strings understood by decompiler_bridge:
-    //   void / bool / int / uint / long / ulong / float / double /
-    //   ptr (= void*) / char* / void* / size_t / unknown
-    // Empty string means "not known".
-    std::string return_type;
-    std::string params_csv;   // comma-separated param type strings, or ""
-    int         param_count  = -1;   // -1 = unknown
-    std::string source;       // "symbol" / "stdlib" / "il2cpp" / "inferred"
 };
 
 // ---------------------------------------------------------------------------
@@ -96,7 +79,6 @@ public:
 
     // Query helpers
     std::vector<DbFunction>    get_functions(int64_t binary_id);
-    DbFunction                 get_function_by_id(int64_t func_id);
     std::vector<DbInstruction> get_instructions(int64_t function_id,
                                                  int limit,
                                                  int offset);
@@ -105,30 +87,6 @@ public:
     int64_t                    get_function_id(int64_t binary_id,
                                                uint64_t address);
     int64_t                    get_instruction_count(int64_t function_id);
-
-    // Returns MAX(address+size) over all Capstone-decoded instructions for
-    // the function, i.e. the first byte past the last real instruction.
-    // Returns 0 if the function has no instructions in the DB.
-    uint64_t                   get_code_end_address(int64_t function_id);
-
-    // Pseudocode cache — empty string means not yet decompiled.
-    std::string get_pseudocode(int64_t func_id);
-    bool        store_pseudocode(int64_t func_id, const std::string& code);
-
-    // ------------------------------------------------------------------
-    // Persistent cross-function signature database
-    //
-    // FuncSignature records are lightweight — address + name + optional
-    // type strings.  They are keyed by (binary_id, address) and survive
-    // across sessions.  source values: "symbol" / "stdlib" / "il2cpp" /
-    // "inferred" (in ascending trust order for conflict resolution).
-    // ------------------------------------------------------------------
-    bool store_signature(int64_t binary_id, const FuncSignature& sig);
-    bool store_signatures(int64_t binary_id,
-                          const std::vector<FuncSignature>& sigs);
-    std::vector<FuncSignature> get_signatures(int64_t binary_id);
-    // Returns true if a signature already exists for (binary_id, address).
-    bool has_signature(int64_t binary_id, uint64_t address);
 
     std::string last_error() const { return last_error_; }
 

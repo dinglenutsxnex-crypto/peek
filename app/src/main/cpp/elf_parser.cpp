@@ -8,9 +8,8 @@
 #include <cerrno>
 #include <cstring>
 #include <fstream>
-#include <iomanip>
-#include <set>
 #include <sstream>
+#include <iomanip>
 
 #define TAG "PeekELF"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
@@ -346,112 +345,6 @@ ElfParseResult elf_parse(const std::string& path) {
     // then the full symbol table.
     parse_syms(dynsym_off, dynsym_size, dynstr_off, dynstr_size, true);
     parse_syms(symtab_off, symtab_size, strtab_off, strtab_size, false);
-
-    // --- Parse .rela.plt to map PLT stub addresses → import symbol names ----
-    //
-    // The symbol table approach above only catches PLT stubs that happen to
-    // have their own symbol table entry (rare in modern stripped .so files).
-    // The definitive mapping is in .rela.plt: each Elf64_Rela entry describes
-    // one JUMP_SLOT relocation whose index, by convention, equals its PLT
-    // entry index.  AArch64 standard PLT layout (GNU ld / lld):
-    //
-    //   .plt      : PLT[0] resolver stub (32 bytes) + entries (16 bytes each)
-    //   .plt.sec  : when present — actual call entries (16 bytes each, index 0
-    //               starts at base, .plt holds only the lazy-resolver header)
-    //
-    // We enumerate .rela.plt in order; entry[ri] maps to
-    //   plt_entry_base + ri * 16
-    {
-        static constexpr uint64_t PLT0_SIZE      = 32;
-        static constexpr uint64_t PLT_ENTRY_SIZE = 16;
-
-        uint64_t rela_plt_off   = 0, rela_plt_size = 0;
-        uint32_t rela_plt_link  = 0;   // sh_link → the associated .dynsym section
-        uint64_t plt_addr       = 0;   // .plt base VA
-        uint64_t plt_sec_addr   = 0;   // .plt.sec base VA (lld / clang toolchain)
-
-        for (uint16_t i = 0; i < shnum; ++i) {
-            auto* sh = get_shdr(i);
-            if (sh->sh_offset + sh->sh_size > d.size()) continue;
-            const char* sn = strtab_str(d, shstrtab_off, shstrtab_size, sh->sh_name);
-            if (!sn) continue;
-            std::string sname(sn);
-            if (sh->sh_type == SHT_RELA && sname == ".rela.plt") {
-                rela_plt_off  = sh->sh_offset;
-                rela_plt_size = sh->sh_size;
-                rela_plt_link = sh->sh_link;
-            }
-            if (sname == ".plt"     && sh->sh_addr != 0) plt_addr     = sh->sh_addr;
-            if (sname == ".plt.sec" && sh->sh_addr != 0) plt_sec_addr = sh->sh_addr;
-        }
-
-        if (rela_plt_off != 0 && rela_plt_size >= sizeof(Elf64_Rela)) {
-            // Symbol / string tables to use for name lookup.
-            uint64_t sym_off = dynsym_off, sym_size = dynsym_size;
-            uint64_t str_off = dynstr_off, str_size = dynstr_size;
-            if (rela_plt_link != 0 && rela_plt_link < shnum) {
-                auto* ss = get_shdr(rela_plt_link);
-                if (ss->sh_offset + ss->sh_size <= d.size()) {
-                    sym_off  = ss->sh_offset;
-                    sym_size = ss->sh_size;
-                    uint32_t str_idx = ss->sh_link;
-                    if (str_idx < shnum) {
-                        auto* ts = get_shdr(str_idx);
-                        str_off  = ts->sh_offset;
-                        str_size = ts->sh_size;
-                    }
-                }
-            }
-
-            // PLT entry base address.
-            // .plt.sec — entries begin at index 0, no PLT0 header.
-            // .plt only — entries begin after the 32-byte PLT0 resolver stub.
-            uint64_t plt_entry_base = (plt_sec_addr != 0)
-                                          ? plt_sec_addr
-                                          : (plt_addr != 0 ? plt_addr + PLT0_SIZE : 0);
-
-            // Build a set of addresses already known so we don't duplicate.
-            std::set<uint64_t> known_addrs;
-            for (const auto& sym : res.symbols)
-                if (sym.address != 0) known_addrs.insert(sym.address);
-
-            size_t rela_count = (size_t)(rela_plt_size / sizeof(Elf64_Rela));
-            size_t plt_added  = 0;
-            for (size_t ri = 0; ri < rela_count; ++ri) {
-                const auto* rela = reinterpret_cast<const Elf64_Rela*>(
-                    d.data() + rela_plt_off + ri * sizeof(Elf64_Rela));
-
-                uint32_t sym_idx = ELF64_R_SYM(rela->r_info);
-                if (sym_idx == 0 || sym_off == 0 ||
-                    sym_size < sizeof(Elf64_Sym)) continue;
-                size_t sym_count = sym_size / sizeof(Elf64_Sym);
-                if (sym_idx >= sym_count) continue;
-
-                const auto* sym = reinterpret_cast<const Elf64_Sym*>(
-                    d.data() + sym_off + sym_idx * sizeof(Elf64_Sym));
-                const char* nm = strtab_str(d, str_off, str_size, sym->st_name);
-                if (!nm || nm[0] == '\0') continue;
-
-                if (plt_entry_base == 0) continue;
-                uint64_t plt_addr_entry = plt_entry_base + ri * PLT_ENTRY_SIZE;
-                if (known_addrs.count(plt_addr_entry)) continue;
-
-                ParsedSymbol ps;
-                ps.address   = plt_addr_entry;
-                ps.size      = PLT_ENTRY_SIZE;
-                ps.name      = nm;
-                ps.type      = STT_FUNC;
-                ps.binding   = STB_GLOBAL;
-                ps.is_import = true;
-                res.symbols.push_back(ps);
-                known_addrs.insert(plt_addr_entry);
-                ++plt_added;
-            }
-
-            if (plt_added > 0)
-                LOGI("PLT: mapped %zu stub address(es) from .rela.plt", plt_added);
-        }
-    }
 
     // If no functions from symbols, fall back: every executable section is one big "function"
     if (res.functions.empty()) {

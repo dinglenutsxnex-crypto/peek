@@ -38,8 +38,6 @@ class MainActivity : AppCompatActivity() {
         b = ActivityMainBinding.inflate(layoutInflater)
         setContentView(b.root)
 
-        showPendingCrashIfAny()
-
         WindowInsetsControllerCompat(window, window.decorView).apply {
             hide(WindowInsetsCompat.Type.navigationBars())
             systemBarsBehavior =
@@ -54,11 +52,6 @@ class MainActivity : AppCompatActivity() {
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
             v.updatePadding(top = bars.top)
             insets
-        }
-
-        lifecycleScope.launch(Dispatchers.IO) {
-            val specDir = extractDecompilerAssets()
-            PeekNative.initDecompiler(specDir)
         }
 
         b.btnOpen.setOnClickListener {
@@ -105,27 +98,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    /**
-     * Extracts decompiler SLEIGH spec assets to filesDir/decompiler_spec/ on
-     * first run (skips files that already exist).  Returns the directory path.
-     */
-    private fun extractDecompilerAssets(): String {
-        val dir = File(filesDir, "decompiler_spec")
-        dir.mkdirs()
-        val files = listOf("AARCH64.sla", "AARCH64.ldefs", "AARCH64.pspec", "AARCH64.cspec")
-        for (name in files) {
-            val dest = File(dir, name)
-            if (!dest.exists()) {
-                try {
-                    assets.open(name).use { input ->
-                        FileOutputStream(dest).use { out -> input.copyTo(out) }
-                    }
-                } catch (_: Exception) {}
-            }
-        }
-        return dir.absolutePath
-    }
-
     private fun copyToCache(uri: Uri): String? {
         return try {
             val name = queryFileName(uri) ?: "binary.so"
@@ -143,41 +115,4 @@ class MainActivity : AppCompatActivity() {
             if (cursor.moveToFirst() && col >= 0) cursor.getString(col) else null
         }
     }
-
-    /**
-     * If the app died last run (either a Java exception caught by
-     * PeekApplication's uncaught-exception handler, or a real native
-     * SIGSEGV/SIGABRT caught by the signal handler in crash_handler.cpp),
-     * a reason was written to this file just before death. Show it now —
-     * a Toast first (so it's visible without any interaction), and tap the
-     * Toast's anchor area isn't possible, so we also offer the full text
-     * via a dialog since native crash messages can be longer than a Toast
-     * comfortably displays. Then delete the file so it isn't shown again.
-     */
-    private fun showPendingCrashIfAny() {
-        val crashFile = File(filesDir, PeekApplication.CRASH_FILE_NAME)
-        if (!crashFile.exists()) return
-
-        val reason = try {
-            crashFile.readText().trim()
-        } catch (e: Exception) {
-            "Could not read crash file: ${e.message}"
-        }
-        crashFile.delete()
-
-        if (reason.isEmpty()) return
-
-        android.widget.Toast.makeText(
-            this,
-            "App crashed last run — tap here for details",
-            android.widget.Toast.LENGTH_LONG
-        ).show()
-
-        androidx.appcompat.app.AlertDialog.Builder(this)
-            .setTitle("Last run crashed")
-            .setMessage(reason)
-            .setPositiveButton("OK", null)
-            .show()
-    }
 }
-

@@ -109,42 +109,12 @@ object PeekNative {
     }
 
     // -----------------------------------------------------------------------
-    // Decompiler
-    // -----------------------------------------------------------------------
-
-    /**
-     * One-time init: registers the SLEIGH spec directory (assets extracted
-     * to filesDir/decompiler_spec). Must be called before decompileFunction.
-     * Returns true on success.
-     */
-    fun initDecompiler(specDir: String): Boolean = nativeInitDecompiler(specDir)
-
-    /**
-     * Decompile a single function identified by its DB id.
-     * Runs the full Ghidra pipeline on the function's raw bytes and caches
-     * the pseudocode in SQLite. Returns empty string on failure.
-     */
-    fun decompileFunction(handle: Long, funcId: Long): String =
-        if (handle == 0L) "" else nativeDecompileFunction(handle, funcId)
-
-    // -----------------------------------------------------------------------
     // Raw JNI declarations
     // -----------------------------------------------------------------------
 
     @JvmStatic private external fun nativeOpenBinary(path: String, dbDir: String): Long
     @JvmStatic private external fun nativeCloseBinary(handle: Long)
     @JvmStatic private external fun nativeGetLastError(handle: Long): String
-    @JvmStatic private external fun nativeInstallCrashHandler(crashFilePath: String)
-
-    /**
-     * Installs a native (C/C++ level) signal handler so that a real crash
-     * (SIGSEGV/SIGABRT/etc, the kind that kills the process with no Java
-     * exception at all) writes a short reason to [crashFilePath] before
-     * the process dies. Call once, as early as possible (Application.onCreate).
-     */
-    @JvmStatic fun installNativeCrashHandler(crashFilePath: String) {
-        nativeInstallCrashHandler(crashFilePath)
-    }
 
     @JvmStatic private external fun nativeGetFunctionList(handle: Long): LongArray
     @JvmStatic private external fun nativeGetFunctionNames(handle: Long): Array<String>
@@ -158,7 +128,4 @@ object PeekNative {
 
     @JvmStatic private external fun nativeGetSymbols(handle: Long): LongArray
     @JvmStatic private external fun nativeGetSymbolStrings(handle: Long): Array<String>
-
-    @JvmStatic private external fun nativeInitDecompiler(specDir: String): Boolean
-    @JvmStatic private external fun nativeDecompileFunction(handle: Long, funcId: Long): String
 }
