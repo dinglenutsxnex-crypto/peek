@@ -8,7 +8,6 @@
 #include "decompiler/funcdata.hh"
 
 #include <android/log.h>
-#include <cstdarg>
 #include <cstdlib>
 #include <cstring>
 #include <fstream>
@@ -35,24 +34,6 @@ std::once_flag g_init_flag;
 bool g_init_ok = false;
 
 thread_local std::string g_last_error;
-
-// --- TEMPORARY DIAGNOSTIC TRACE ---
-// Collects [DIAG] messages from inject_sig (and any other targeted probe)
-// so they can be surfaced via a Toast on-device, since adb/logcat isn't
-// available in this build environment. Cleared at the start of every
-// peek_decompile_bytes_v2 call.
-thread_local std::string g_diag_trace;
-
-static void diag(const char* fmt, ...) {
-    char buf[512];
-    va_list args;
-    va_start(args, fmt);
-    vsnprintf(buf, sizeof(buf), fmt, args);
-    va_end(args);
-    if (!g_diag_trace.empty()) g_diag_trace += " | ";
-    g_diag_trace += buf;
-    LOGI_B("%s", buf);
-}
 
 static char* fail(const char* stage, const char* func, const char* detail) {
     std::ostringstream ss;
@@ -108,40 +89,13 @@ static void inject_sig(Architecture* arch,
                         const PeekFuncSig& sig,
                         uint64_t      skip_addr)
 {
-    // --- TEMPORARY TARGETED DIAGNOSTIC ---
-    // Tracks one specific hardcoded test address (is_odd in libtest_edge.so)
-    // through every early-return branch in this function, to isolate
-    // exactly where the call resolution breaks down for the is_even/is_odd
-    // mutual-recursion case specifically.
-    const bool is_target = (sig.address == 0x92c8 || sig.address == 0x9e10);
-    if (is_target) {
-        diag("inject_sig 0x%llx: addr=0x%llx name=%s ret=%s params=%s skip=0x%llx",
-             (unsigned long long)sig.address,
-             (unsigned long long)sig.address,
-             sig.name ? sig.name : "(null)",
-             (sig.return_type && sig.return_type[0]) ? sig.return_type : "(empty)",
-             (sig.params_csv && sig.params_csv[0]) ? sig.params_csv : "(empty)",
-             (unsigned long long)skip_addr);
-    }
-
-    if (sig.address == 0 || sig.address == skip_addr) {
-        if (is_target) diag("0x%llx REJECTED: address==0 or ==skip_addr", (unsigned long long)sig.address);
-        return;
-    }
-    if (!sig.name || sig.name[0] == '\0') {
-        if (is_target) diag("0x%llx REJECTED: empty name", (unsigned long long)sig.address);
-        return;
-    }
+    if (sig.address == 0 || sig.address == skip_addr) return;
+    if (!sig.name || sig.name[0] == '\0') return;
 
     Address sigAddr(ram, (uintb)sig.address);
     Scope* scope = arch->symboltab->getGlobalScope();
 
     FunctionSymbol* fsym = scope->addFunction(sigAddr, sig.name);
-    if (is_target) {
-        diag("0x%llx addFunction(name=%s) returned %s",
-             (unsigned long long)sig.address, sig.name,
-             fsym ? "non-null (registered)" : "NULL (FAILED)");
-    }
     if (!fsym) return;
 
     // If we have type information, set the callee's prototype so the
@@ -151,10 +105,7 @@ static void inject_sig(Architecture* arch,
     bool has_params = sig.param_count >= 0 &&
                       sig.params_csv   && sig.params_csv[0] != '\0';
 
-    if (!has_ret && !has_params) {
-        if (is_target) diag("0x%llx: no type info, name-only registration done", (unsigned long long)sig.address);
-        return;
-    }
+    if (!has_ret && !has_params) return;
 
     Funcdata* callee = fsym->getFunction();
     if (!callee) return;
@@ -317,14 +268,6 @@ const char* peek_decompile_get_last_error(void) {
     return g_last_error.c_str();
 }
 
-// --- TEMPORARY DIAGNOSTIC ACCESSOR ---
-// Returns whatever inject_sig()/the call-survival checks collected during
-// the most recent peek_decompile_bytes_v2 call on this thread. Surfaced
-// via Toast on-device since adb/logcat isn't available in this build setup.
-const char* peek_get_diag_trace(void) {
-    return g_diag_trace.c_str();
-}
-
 // ---------------------------------------------------------------------------
 // V2 — full implementation with signature injection
 // ---------------------------------------------------------------------------
@@ -404,7 +347,6 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
                                PeekInferredSig*   out_inferred)
 {
     g_last_error.clear();
-    g_diag_trace.clear();
     if (out_inferred) out_inferred->is_set = 0;
 
     if (!g_init_ok)
@@ -630,26 +572,6 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
             return fail("[S3:followFlow]", func_name, e.what());
         }
 
-        // --- TEMPORARY DIAGNOSTIC: call-survival check after followFlow ---
-        // Bisects whether a call to is_odd exists in the raw flow graph
-        // right after followFlow, BEFORE the action pipeline (Stage 4) runs
-        // any transformation/simplification/dead-code-elimination. Checks
-        // BOTH is_odd's real address (0x92c8) AND its PLT thunk address
-        // (0x9e10), since the actual BL instruction targets the thunk at
-        // the machine-code level — the call's recorded entryaddress may be
-        // either, depending on how Ghidra resolves it.
-        {
-            uint64_t found_addr = 0;
-            for (int4 ci = 0; ci < fd->numCalls(); ++ci) {
-                FuncCallSpecs* fc = fd->getCallSpecs(ci);
-                if (!fc) continue;
-                uint64_t a = (uint64_t)fc->getEntryAddress().getOffset();
-                if (a == 0x92c8 || a == 0x9e10) { found_addr = a; break; }
-            }
-            diag("after followFlow: numCalls=%d call_target=0x%llx",
-                 fd->numCalls(), (unsigned long long)found_addr);
-        }
-
         // ------------------------------------------------------------------
         // Stage 4 — action pipeline (type recovery, SSA, simplification)
         // ------------------------------------------------------------------
@@ -665,19 +587,6 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
                 return fail("[S4:pipeline]", func_name, detail.str().c_str());
             }
             LOGI_B("[S4] pipeline OK for %s (res=%d)", func_name, res);
-
-            // --- TEMPORARY DIAGNOSTIC: call-survival check after pipeline ---
-            {
-                uint64_t found_addr = 0;
-                for (int4 ci = 0; ci < fd->numCalls(); ++ci) {
-                    FuncCallSpecs* fc = fd->getCallSpecs(ci);
-                    if (!fc) continue;
-                    uint64_t a = (uint64_t)fc->getEntryAddress().getOffset();
-                    if (a == 0x92c8 || a == 0x9e10) { found_addr = a; break; }
-                }
-                diag("after pipeline: numCalls=%d call_target=0x%llx",
-                     fd->numCalls(), (unsigned long long)found_addr);
-            }
 
             // Extract the prototype the decompiler inferred — for lazy learning.
             extract_inferred(fd, out_inferred);

@@ -1,18 +1,21 @@
 package com.nex.peek
 
 import android.Manifest
+import android.animation.Animator
+import android.animation.AnimatorListenerAdapter
 import android.annotation.SuppressLint
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.text.Editable
 import android.text.TextWatcher
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
-import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
@@ -25,6 +28,7 @@ import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.tabs.TabLayoutMediator
 import com.nex.peek.adapter.FunctionCompactAdapter
 import com.nex.peek.adapter.ViewOptionAdapter
@@ -62,6 +66,9 @@ class AnalysisActivity : AppCompatActivity() {
     private var activeTabs: MutableList<TabId> = mutableListOf()
     private var tabMediator: TabLayoutMediator? = null
 
+    // Delay (ms) so the click ripple finishes before the content switches
+    private val CLICK_SYNC_DELAY_MS = 140L
+
     override fun onCreate(savedInstanceState: Bundle?) {
         WindowCompat.setDecorFitsSystemWindows(window, false)
         super.onCreate(savedInstanceState)
@@ -80,13 +87,8 @@ class AnalysisActivity : AppCompatActivity() {
             window.isStatusBarContrastEnforced = false
         }
 
-        // Apply status-bar inset directly to each panel.
-        // Root is a horizontal LinearLayout — applying top inset there doesn't
-        // prevent AppCompat from also dispatching to the Toolbar, causing double-pad.
         ViewCompat.setOnApplyWindowInsetsListener(b.rootLayout) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            // Toolbar now spans the full width above the split, so it's the
-            // only view that needs the status-bar inset.
             b.toolbar.updatePadding(top = bars.top)
             WindowInsetsCompat.CONSUMED
         }
@@ -101,11 +103,29 @@ class AnalysisActivity : AppCompatActivity() {
         activeTabs = loadTabPrefs()
         updateTabs()
 
+        // Dismiss floating dropdown when tapping outside
+        b.rootContainer.setOnClickListener {
+            if (b.viewOptionsContainer.visibility == View.VISIBLE) {
+                b.viewOptionsContainer.visibility = View.GONE
+            }
+        }
+
         funcAdapter = FunctionCompactAdapter { fn ->
-            vm.selectedFunction.value = fn
+            // Delay content switch to sync with the click ripple animation
+            Handler(Looper.getMainLooper()).postDelayed({
+                vm.selectedFunction.value = fn
+            }, CLICK_SYNC_DELAY_MS)
         }
         b.rvFunctions.layoutManager = LinearLayoutManager(this)
         b.rvFunctions.adapter = funcAdapter
+
+        // Scroll hint: show/hide the bottom fade based on scroll position
+        b.rvFunctions.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) {
+                val canScrollDown = rv.canScrollVertically(1)
+                b.scrollHint.visibility = if (canScrollDown) View.VISIBLE else View.GONE
+            }
+        })
 
         b.etSearch.addTextChangedListener(object : TextWatcher {
             override fun beforeTextChanged(s: CharSequence?, st: Int, c: Int, a: Int) {}
@@ -116,6 +136,11 @@ class AnalysisActivity : AppCompatActivity() {
                     if (q.isEmpty()) allFunctions.toList()
                     else allFunctions.filter { it.displayName.lowercase().contains(q) }
                 )
+                // Re-evaluate scroll hint after filter changes list size
+                b.rvFunctions.post {
+                    b.scrollHint.visibility =
+                        if (b.rvFunctions.canScrollVertically(1)) View.VISIBLE else View.GONE
+                }
             }
         })
 
@@ -127,6 +152,11 @@ class AnalysisActivity : AppCompatActivity() {
             allFunctions.addAll(fns)
             funcAdapter.submitList(fns)
             if (fns.isNotEmpty()) vm.selectedFunction.value = fns[0]
+            // Initial scroll hint check after list is laid out
+            b.rvFunctions.post {
+                b.scrollHint.visibility =
+                    if (b.rvFunctions.canScrollVertically(1)) View.VISIBLE else View.GONE
+            }
         }
     }
 
@@ -145,18 +175,23 @@ class AnalysisActivity : AppCompatActivity() {
     override fun onOptionsItemSelected(item: MenuItem): Boolean {
         return when (item.itemId) {
             MENU_VIEW_OPTIONS -> { toggleViewOptions(); true }
-            MENU_DOWNLOAD     -> { showDownloadMenu(b.toolbar); true }
+            MENU_DOWNLOAD     -> { showDownloadMenu(); true }
             else              -> super.onOptionsItemSelected(item)
         }
     }
 
-    // ── Download popup ────────────────────────────────────────────────────────
+    // ── Download floating checklist (below toolbar, right-aligned) ─────────────
 
-    private fun showDownloadMenu(anchor: View) {
-        val popup = PopupMenu(this, anchor)
+    private fun showDownloadMenu() {
+        // Reuse the same floating container pattern but for download options.
+        // We use a simple PopupWindow-style approach by showing a small dialog.
+        // Since download is a one-shot action (not a checklist), keep it as a
+        // floating card that appears below the toolbar on the right.
+        val popup = android.widget.PopupMenu(this, b.toolbar)
         popup.menu.add(0, DL_HEX,        0, "Download Hex")
         popup.menu.add(0, DL_ASM,        1, "Download Disassembly")
         popup.menu.add(0, DL_PSEUDOCODE, 2, "Download Pseudocode")
+        popup.gravity = android.view.Gravity.END
         popup.setOnMenuItemClickListener { item ->
             when (item.itemId) {
                 DL_HEX        -> { initiateDownload(BulkDownloader.DownloadType.HEX); true }
@@ -229,12 +264,16 @@ class AnalysisActivity : AppCompatActivity() {
         }
     }
 
+    // ── View options floating dropdown ────────────────────────────────────────
+
     private fun toggleViewOptions() {
         if (b.viewOptionsContainer.visibility == View.VISIBLE) {
             b.viewOptionsContainer.visibility = View.GONE
         } else {
-            b.viewOptionsContainer.visibility = View.VISIBLE
             setupViewOptionsList()
+            b.viewOptionsContainer.visibility = View.VISIBLE
+            // Bring to front so it floats above everything
+            b.viewOptionsContainer.bringToFront()
         }
     }
 

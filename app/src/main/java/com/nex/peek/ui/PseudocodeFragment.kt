@@ -71,46 +71,7 @@ class PseudocodeFragment : Fragment() {
                 }
                 b.tvEmpty.visibility = View.VISIBLE
             } else {
-                // --- TEMPORARY BUILD-FINGERPRINT + DIAGNOSTIC MARKER ---
-                // peek_jni.cpp now prepends TWO lines when the patched fix runs:
-                //   // [PEEK-FIX-MARKER v4] sig_cache=158 c_sigs_for_this_call=157 inferred=yes
-                //   // [DIAG] inject_sig is_odd: addr=0x92c8 name=is_odd ... | after followFlow: ... | after pipeline: ...
-                // Strip both lines from what's displayed, and show them in a dialog
-                // (not a Toast — the diag trace can be long and needs to be read
-                // carefully, not glanced at for 2 seconds) so it's possible to
-                // pinpoint exactly which stage drops the call, with no adb needed.
-                var displayCode = code
-                val markerPrefix = "// [PEEK-FIX-MARKER"
-                if (code.startsWith(markerPrefix)) {
-                    val firstNl = code.indexOf('\n')
-                    val markerLine = if (firstNl >= 0) code.substring(0, firstNl) else code
-                    val rest = if (firstNl >= 0) code.substring(firstNl + 1) else ""
-
-                    var diagLine = ""
-                    displayCode = rest
-                    if (rest.startsWith("// [DIAG]")) {
-                        val secondNl = rest.indexOf('\n')
-                        diagLine = if (secondNl >= 0) rest.substring(0, secondNl) else rest
-                        displayCode = if (secondNl >= 0) rest.substring(secondNl + 1) else ""
-                    }
-
-                    androidx.appcompat.app.AlertDialog.Builder(requireContext())
-                        .setTitle("Fix diagnostic")
-                        .setMessage(
-                            markerLine.removePrefix("//").trim() +
-                            "\n\n" +
-                            diagLine.removePrefix("// [DIAG]").trim()
-                        )
-                        .setPositiveButton("OK", null)
-                        .show()
-                } else {
-                    android.widget.Toast.makeText(
-                        requireContext(),
-                        "No fix marker found — old build or fix not applied",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-                b.tvPseudocode.text = PseudocodeHighlighter.highlight(displayCode)
+                b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
                 b.btnCopy.visibility = View.VISIBLE
             }
         }

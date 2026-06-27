@@ -80,15 +80,6 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
  */
 const char* peek_decompile_get_last_error(void);
 
-/*
- * TEMPORARY DIAGNOSTIC: returns trace messages collected during the most
- * recent peek_decompile_bytes_v2 call on this thread (inject_sig behavior,
- * call-survival checks before/after the action pipeline). Valid until the
- * next peek_decompile_bytes_v2 call on this thread, same lifetime rule as
- * peek_decompile_get_last_error(). Remove once the root cause is found.
- */
-const char* peek_get_diag_trace(void);
-
 void  peek_decompiler_shutdown(void);
 
 #ifdef __cplusplus

@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Semi-transparent monochrome Peek eye watermark for background -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="320dp"
+    android:height="320dp"
+    android:viewportWidth="512"
+    android:viewportHeight="512"
+    android:alpha="0.04">
+    <!-- Outer eye shape -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M256,136C175,136 105,182 56,256c49,74 119,120 200,120s151,-46 200,-120c-49,-74 -119,-120 -200,-120z" />
+    <!-- White of eye (slightly darker to create contrast) -->
+    <path
+        android:fillColor="#AAAAAA"
+        android:pathData="M256,164 a92,92 0,1,0 0.01,0 Z" />
+    <!-- Iris / pupil -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M256,190 a66,66 0,1,0 0.01,0 Z" />
+    <!-- Catchlight -->
+    <path
+        android:fillColor="#AAAAAA"
+        android:pathData="M232,210 a22,22 0,1,0 0.01,0 Z" />
+</vector>
