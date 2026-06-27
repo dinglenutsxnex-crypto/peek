@@ -8,16 +8,13 @@ import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
-import android.view.Gravity
-import android.view.Menu
-import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
-import android.widget.PopupMenu
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
 import androidx.core.view.WindowInsetsCompat
@@ -26,6 +23,7 @@ import androidx.core.view.updateLayoutParams
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
 import androidx.recyclerview.widget.LinearLayoutManager
+import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.tabs.TabLayoutMediator
 import com.nex.peek.adapter.FunctionCompactAdapter
 import com.nex.peek.adapter.ViewOptionAdapter
@@ -37,7 +35,6 @@ import com.nex.peek.ui.AnalysisViewModel
 import com.nex.peek.ui.TabId
 import com.nex.peek.ui.TabSpec
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -82,13 +79,8 @@ class AnalysisActivity : AppCompatActivity() {
             window.isStatusBarContrastEnforced = false
         }
 
-        // Apply status-bar inset directly to each panel.
-        // Root is a horizontal LinearLayout — applying top inset there doesn't
-        // prevent AppCompat from also dispatching to the Toolbar, causing double-pad.
         ViewCompat.setOnApplyWindowInsetsListener(b.rootLayout) { _, insets ->
             val bars = insets.getInsets(WindowInsetsCompat.Type.systemBars())
-            // Toolbar now spans the full width above the split, so it's the
-            // only view that needs the status-bar inset.
             b.toolbar.updatePadding(top = bars.top)
             WindowInsetsCompat.CONSUMED
         }
@@ -104,11 +96,7 @@ class AnalysisActivity : AppCompatActivity() {
         updateTabs()
 
         funcAdapter = FunctionCompactAdapter { fn ->
-            // Delay selection update to sync with ripple animation (~200ms)
-            lifecycleScope.launch {
-                delay(150)
-                vm.selectedFunction.value = fn
-            }
+            vm.selectedFunction.value = fn
         }
         b.rvFunctions.layoutManager = LinearLayoutManager(this)
         b.rvFunctions.adapter = funcAdapter
@@ -126,56 +114,120 @@ class AnalysisActivity : AppCompatActivity() {
         })
 
         setupDividerDrag()
+        setupInlineButtons()
+        setupScrollHint()
 
         val handle = AnalysisSession.get()
         if (handle != 0L) {
             val fns = PeekNative.getFunctionList(handle)
             allFunctions.addAll(fns)
             funcAdapter.submitList(fns)
-            if (fns.isNotEmpty()) {
-                // Initial selection without delay
-                vm.selectedFunction.value = fns[0]
+            if (fns.isNotEmpty()) vm.selectedFunction.value = fns[0]
+        }
+    }
+
+    // ── Inline panel button wiring ────────────────────────────────────────────
+
+    private fun setupInlineButtons() {
+        b.btnViewOptions.setOnClickListener { toggleViewOptions() }
+        b.btnDownload.setOnClickListener  { toggleDownloadOptions() }
+
+        b.tvDlHex.setOnClickListener {
+            collapseDownloadOptions()
+            initiateDownload(BulkDownloader.DownloadType.HEX)
+        }
+        b.tvDlAsm.setOnClickListener {
+            collapseDownloadOptions()
+            initiateDownload(BulkDownloader.DownloadType.ASM)
+        }
+        b.tvDlPseudocode.setOnClickListener {
+            collapseDownloadOptions()
+            initiateDownload(BulkDownloader.DownloadType.PSEUDOCODE)
+        }
+    }
+
+    // ── Scroll hint ───────────────────────────────────────────────────────────
+
+    private fun setupScrollHint() {
+        val updateHint = {
+            val canScroll = b.rvFunctions.canScrollVertically(1)
+            b.scrollHintGradient.visibility = if (canScroll) View.VISIBLE else View.GONE
+        }
+
+        b.rvFunctions.addOnScrollListener(object : RecyclerView.OnScrollListener() {
+            override fun onScrolled(rv: RecyclerView, dx: Int, dy: Int) = updateHint()
+        })
+
+        // Re-check whenever list content changes (after submitList settles)
+        b.rvFunctions.post { updateHint() }
+        b.rvFunctions.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> updateHint() }
+    }
+
+    // ── View Options inline panel ─────────────────────────────────────────────
+
+    private fun toggleViewOptions() {
+        if (b.viewOptionsContainer.visibility == View.VISIBLE) {
+            collapseViewOptions()
+        } else {
+            // Collapse download if open
+            collapseDownloadOptions()
+            b.viewOptionsContainer.visibility = View.VISIBLE
+            b.btnViewOptions.imageTintList =
+                android.content.res.ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.accent_bright)
+                )
+            setupViewOptionsList()
+        }
+    }
+
+    private fun collapseViewOptions() {
+        b.viewOptionsContainer.visibility = View.GONE
+        b.btnViewOptions.imageTintList =
+            android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.text_secondary)
+            )
+    }
+
+    private fun setupViewOptionsList() {
+        b.rvViewOptions.layoutManager = LinearLayoutManager(this)
+        b.rvViewOptions.adapter = ViewOptionAdapter(ALL_TABS, activeTabs) { id ->
+            if (activeTabs.contains(id)) {
+                if (activeTabs.size > 1) activeTabs.remove(id)
+            } else {
+                activeTabs.add(id)
+                activeTabs.sortBy { tabId -> ALL_TABS.indexOfFirst { it.id == tabId } }
             }
+            updateTabs()
+            saveTabPrefs()
+            setupViewOptionsList() // Refresh list
         }
     }
 
-    // ── Toolbar buttons ───────────────────────────────────────────────────────
+    // ── Download inline panel ─────────────────────────────────────────────────
 
-    override fun onCreateOptionsMenu(menu: Menu): Boolean {
-        menu.add(0, MENU_DOWNLOAD, 0, "Download")
-            .setIcon(R.drawable.ic_download)
-            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        menu.add(0, MENU_VIEW_OPTIONS, 1, "View options")
-            .setIcon(R.drawable.ic_view_options)
-            .setShowAsAction(MenuItem.SHOW_AS_ACTION_ALWAYS)
-        return true
-    }
-
-    override fun onOptionsItemSelected(item: MenuItem): Boolean {
-        return when (item.itemId) {
-            MENU_VIEW_OPTIONS -> { toggleViewOptions(); true }
-            MENU_DOWNLOAD     -> { showDownloadMenu(b.toolbar); true }
-            else              -> super.onOptionsItemSelected(item)
+    private fun toggleDownloadOptions() {
+        if (b.downloadOptionsContainer.visibility == View.VISIBLE) {
+            collapseDownloadOptions()
+        } else {
+            // Collapse view options if open
+            collapseViewOptions()
+            b.downloadOptionsContainer.visibility = View.VISIBLE
+            b.btnDownload.imageTintList =
+                android.content.res.ColorStateList.valueOf(
+                    ContextCompat.getColor(this, R.color.accent_bright)
+                )
         }
     }
 
-    // ── Download popup ────────────────────────────────────────────────────────
-
-    private fun showDownloadMenu(anchor: View) {
-        val popup = PopupMenu(this, anchor)
-        popup.menu.add(0, DL_HEX,        0, "Download Hex")
-        popup.menu.add(0, DL_ASM,        1, "Download Disassembly")
-        popup.menu.add(0, DL_PSEUDOCODE, 2, "Download Pseudocode")
-        popup.setOnMenuItemClickListener { item ->
-            when (item.itemId) {
-                DL_HEX        -> { initiateDownload(BulkDownloader.DownloadType.HEX); true }
-                DL_ASM        -> { initiateDownload(BulkDownloader.DownloadType.ASM); true }
-                DL_PSEUDOCODE -> { initiateDownload(BulkDownloader.DownloadType.PSEUDOCODE); true }
-                else          -> false
-            }
-        }
-        popup.show()
+    private fun collapseDownloadOptions() {
+        b.downloadOptionsContainer.visibility = View.GONE
+        b.btnDownload.imageTintList =
+            android.content.res.ColorStateList.valueOf(
+                ContextCompat.getColor(this, R.color.text_secondary)
+            )
     }
+
+    // ── Download execution ────────────────────────────────────────────────────
 
     private fun initiateDownload(type: BulkDownloader.DownloadType) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.Q) {
@@ -238,31 +290,7 @@ class AnalysisActivity : AppCompatActivity() {
         }
     }
 
-    private fun toggleViewOptions() {
-        if (b.viewOptionsContainer.visibility == View.VISIBLE) {
-            b.viewOptionsContainer.visibility = View.GONE
-        } else {
-            b.viewOptionsContainer.visibility = View.VISIBLE
-            setupViewOptionsList()
-        }
-    }
-
-    private fun setupViewOptionsList() {
-        b.rvViewOptions.layoutManager = LinearLayoutManager(this)
-        b.rvViewOptions.adapter = ViewOptionAdapter(ALL_TABS, activeTabs) { id ->
-            if (activeTabs.contains(id)) {
-                if (activeTabs.size > 1) {
-                    activeTabs.remove(id)
-                }
-            } else {
-                activeTabs.add(id)
-                activeTabs.sortBy { tabId -> ALL_TABS.indexOfFirst { it.id == tabId } }
-            }
-            updateTabs()
-            saveTabPrefs()
-            setupViewOptionsList() // Refresh list
-        }
-    }
+    // ── Tab management ────────────────────────────────────────────────────────
 
     private fun updateTabs() {
         tabMediator?.detach()
@@ -338,13 +366,6 @@ class AnalysisActivity : AppCompatActivity() {
 
     companion object {
         const val EXTRA_NAME = "binary_name"
-
-        private const val MENU_DOWNLOAD     = 1002
-        private const val MENU_VIEW_OPTIONS = 1001
-
-        private const val DL_HEX        = 2001
-        private const val DL_ASM        = 2002
-        private const val DL_PSEUDOCODE = 2003
 
         private const val PREFS_NAME = "peek_prefs"
         private const val PREFS_TABS  = "visible_tabs"

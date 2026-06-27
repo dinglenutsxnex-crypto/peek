@@ -43,7 +43,9 @@ class FunctionCompactAdapter(
                 selectedPosition = bindingAdapterPosition
                 if (prev >= 0) notifyItemChanged(prev)
                 notifyItemChanged(selectedPosition)
-                onClick(fn)
+                // Delay the content switch by the ripple animation duration so the
+                // selection highlight and the code panel change animate in lock-step.
+                b.root.postDelayed({ onClick(fn) }, 150)
             }
         }
     }
