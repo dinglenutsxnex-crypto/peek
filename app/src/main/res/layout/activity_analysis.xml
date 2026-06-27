@@ -6,12 +6,22 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent">
 
+    <!-- Semi-transparent watermark background -->
+    <ImageView
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:src="@drawable/ic_peek_logo"
+        android:scaleType="center"
+        android:alpha="0.08"
+        android:tint="@color/text_secondary" />
+
     <LinearLayout
         android:id="@+id/rootLayout"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
         android:orientation="vertical"
-        android:background="@color/bg_dark">
+        android:background="@color/bg_dark"
+        android:paddingTop="5dp">
 
         <!-- Full-width header: spans the whole screen, sits above the split. -->
         <androidx.appcompat.widget.Toolbar
@@ -25,6 +35,7 @@
             app:navigationIconTint="@color/text_primary"
             app:contentInsetStart="8dp"
             app:contentInsetStartWithNavigation="8dp"
+            app:contentInsetEnd="8dp"
             app:titleTextAppearance="@style/PeekToolbarTitle" />
 
         <View
@@ -108,7 +119,8 @@
                     android:scrollbars="vertical"
                     android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
                     android:scrollbarSize="2dp"
-                    android:fadeScrollbars="false" />
+                    android:fadeScrollbars="false"
+                    android:scrollbarStyle="outsideOverlay" />
 
             </LinearLayout>
 

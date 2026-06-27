@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.text.Editable
 import android.text.TextWatcher
+import android.view.Gravity
 import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
@@ -36,6 +37,7 @@ import com.nex.peek.ui.AnalysisViewModel
 import com.nex.peek.ui.TabId
 import com.nex.peek.ui.TabSpec
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 
@@ -102,7 +104,11 @@ class AnalysisActivity : AppCompatActivity() {
         updateTabs()
 
         funcAdapter = FunctionCompactAdapter { fn ->
-            vm.selectedFunction.value = fn
+            // Delay selection update to sync with ripple animation (~200ms)
+            lifecycleScope.launch {
+                delay(150)
+                vm.selectedFunction.value = fn
+            }
         }
         b.rvFunctions.layoutManager = LinearLayoutManager(this)
         b.rvFunctions.adapter = funcAdapter
@@ -126,7 +132,10 @@ class AnalysisActivity : AppCompatActivity() {
             val fns = PeekNative.getFunctionList(handle)
             allFunctions.addAll(fns)
             funcAdapter.submitList(fns)
-            if (fns.isNotEmpty()) vm.selectedFunction.value = fns[0]
+            if (fns.isNotEmpty()) {
+                // Initial selection without delay
+                vm.selectedFunction.value = fns[0]
+            }
         }
     }
 
