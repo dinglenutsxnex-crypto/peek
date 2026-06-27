@@ -152,6 +152,22 @@ static void inject_sig(Architecture* arch,
 // ---------------------------------------------------------------------------
 // Extract the prototype that the decompiler inferred for the target function.
 // Stored in simplified vocabulary for the DB; used for lazy learning.
+//
+// IMPORTANT: a printed return type of "void" is ambiguous on its own — it is
+// indistinguishable from a case where the real return value was computed by
+// something this isolated, per-function decompile couldn't resolve (a call
+// to a sibling function outside [baddr,eaddr], or a system-register read),
+// got dead-code-eliminated as a result, and left nothing for Ghidra's own
+// ActionOutputPrototype to see. Caching that as a learned "void" signature
+// and then locking it onto every future caller (via setOutputLock in
+// inject_sig) would actively make things worse on the next decompile, not
+// better — the exact failure this lazy-learning cache is supposed to avoid.
+//
+// getFirstReturnOp() gives the actual CPUI_RETURN p-code op; numInput() > 1
+// means a real data value reached the return (index 0 is just the
+// return-address slot). If no live RETURN op carries a data input, we treat
+// the inferred prototype as unusable and leave is_set = 0 rather than
+// caching a possibly-false "void".
 // ---------------------------------------------------------------------------
 
 static void extract_inferred(const Funcdata* fd, PeekInferredSig* out) {
@@ -166,11 +182,38 @@ static void extract_inferred(const Funcdata* fd, PeekInferredSig* out) {
 
         // Return type
         Datatype* ret = fp.getOutputType();
-        if (ret) {
-            std::string rname = ret->getName();
-            snprintf(out->return_type, sizeof(out->return_type),
-                     "%s", rname.c_str());
+        bool ret_is_void = !ret || ret->getMetatype() == TYPE_VOID;
+
+        if (ret_is_void) {
+            // Could be a real void function, or DCE-eaten output. Check
+            // whether any live RETURN op actually carried a data value —
+            // if so, something is inconsistent (treat as unusable rather
+            // than guess); if every RETURN op is data-less too, look at
+            // whether the function has any RETURN at all to decide.
+            PcodeOp* retop = fd->getFirstReturnOp();
+            if (retop == nullptr) {
+                // No live return at all (e.g. noreturn/abort-style or a
+                // pipeline bail) — nothing trustworthy to learn.
+                return;
+            }
+            if (retop->numInput() > 1) {
+                // A data value reached the return op, but getOutputType()
+                // still says void — inconsistent state, don't trust it.
+                return;
+            }
+            // No data input on the only return op. This is the ambiguous
+            // case described above: do not cache "void" from here. A
+            // genuinely void function will simply have no entry learned,
+            // which is harmless (inject_sig only locks a prototype when
+            // it has real type info; an absent entry just means future
+            // callers fall back to inference for this callee, same as
+            // today, not worse).
+            return;
         }
+
+        std::string rname = ret->getName();
+        snprintf(out->return_type, sizeof(out->return_type),
+                 "%s", rname.c_str());
 
         // Parameters
         int np = fp.numParams();
@@ -229,6 +272,72 @@ const char* peek_decompile_get_last_error(void) {
 // V2 — full implementation with signature injection
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Tail-call rewrite.
+//
+// This bridge decompiles exactly one function's bytes in isolation
+// ([baddr,eaddr) only — see Stage 2). A normal call (BL ... ; <code continues
+// after>) works fine: flow returns to the instruction after the BL, which is
+// still inside the range, and the call site gets typed via inject_sig.
+//
+// A *tail call* — a plain, unconditional B as a function's last instruction,
+// jumping directly to a sibling function's address instead of falling
+// through to a RET — has no "after the call" to return to. followFlow sees
+// this as flow leaving [baddr,eaddr) and, since FlowInfo::handleOutOfBounds
+// has neither ignore_outofbounds nor error_outofbounds set, it warns and
+// truncates that block with no successor and no return value — there is no
+// live RETURN op left for anything (including the Stage 3.5 self-output
+// lock) to anchor a value on. Real Ghidra never hits this: a whole-binary
+// load never leaves the analyzed range, so a tail B just flows into the
+// callee's own body and its own RET handles everything normally.
+//
+// Fix: detect this exact shape and rewrite it before Sleigh ever sees the
+// bytes. B and BL differ by exactly one bit (bit 31) with an identical
+// 26-bit target field, so flipping that bit preserves the branch target
+// precisely while turning it into a real call instruction. We then append a
+// synthetic RET so there is somewhere for control to return to. This is only
+// applied when:
+//   (a) the last 4 bytes decode as an unconditional B (top 6 bits 000101),
+//       not a BL (top 6 bits 100101) and not any conditional/B.cond form,
+//   (b) the computed target address matches a known sibling function in
+//       sigs[] — i.e. we have positive evidence this is a real call to a
+//       function we can name and type, not a guess about an arbitrary jump.
+// Anything else (computed branches, targets with no matching signature,
+// non-B-shaped tail instructions) is left completely untouched.
+// ---------------------------------------------------------------------------
+
+static bool rewrite_tail_call(std::vector<uint8_t>& buf, uint64_t base_addr,
+                               const PeekFuncSig* sigs, size_t sig_count) {
+    if (buf.size() < 4) return false;
+    size_t last = buf.size() - 4;
+    uint32_t w;
+    std::memcpy(&w, buf.data() + last, 4);
+
+    // Unconditional B: top 6 bits == 000101. (BL is 100101; B.cond is 0101010.)
+    uint32_t top6 = (w >> 26) & 0x3F;
+    if (top6 != 0b000101) return false;
+
+    int32_t imm26 = (int32_t)(w & 0x3FFFFFF);
+    if (imm26 & 0x2000000) imm26 -= 0x4000000;  // sign-extend
+    uint64_t insn_addr = base_addr + (uint64_t)last;
+    uint64_t target = insn_addr + (uint64_t)((int64_t)imm26 * 4);
+
+    bool target_known = false;
+    for (size_t i = 0; i < sig_count; ++i) {
+        if (sigs[i].address == target) { target_known = true; break; }
+    }
+    if (!target_known) return false;
+
+    // Flip bit 31: B -> BL, identical imm26, identical target.
+    uint32_t bl_word = w | (1u << 31);
+    std::memcpy(buf.data() + last, &bl_word, 4);
+
+    // Append a RET (0xD65F03C0) so the call has somewhere to return to.
+    static const uint8_t ret_bytes[4] = {0xC0, 0x03, 0x5F, 0xD6};
+    buf.insert(buf.end(), ret_bytes, ret_bytes + 4);
+    return true;
+}
+
 char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
                                const char*    func_name,
                                const char*    tmp_path,
@@ -245,14 +354,23 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
     if (!bytes || len == 0)
         return fail("[init]", func_name, "null/empty byte buffer");
 
+    // Work on a local mutable copy so a tail-call rewrite (if any) never
+    // touches the caller's buffer.
+    std::vector<uint8_t> work(bytes, bytes + len);
+    bool tail_call_rewritten =
+        rewrite_tail_call(work, real_func_addr, sigs, sig_count);
+    if (tail_call_rewritten) {
+        LOGI_B("[S0.5] rewrote trailing tail-call B->BL+RET for %s", func_name);
+    }
+
     // ------------------------------------------------------------------
     // Stage 1 — write raw bytes to a temp file for RawLoadImage
     // ------------------------------------------------------------------
-    LOGI_B("[S1] writing %zu bytes to %s for %s", len, tmp_path, func_name);
+    LOGI_B("[S1] writing %zu bytes to %s for %s", work.size(), tmp_path, func_name);
     {
         std::ofstream f(tmp_path, std::ios::binary | std::ios::trunc);
         if (!f) return fail("[S1:write_temp]", func_name, tmp_path);
-        f.write(reinterpret_cast<const char*>(bytes), (std::streamsize)len);
+        f.write(reinterpret_cast<const char*>(work.data()), (std::streamsize)work.size());
     }
 
     std::string result;
@@ -284,14 +402,15 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
                         "default code space is null after init()");
         }
 
-        // Range check
+        // Range check (use work.size(): a tail-call rewrite may have
+        // appended a synthetic RET that must be included in the range).
         uintb highest = ram->getHighest();
         if ((uintb)real_func_addr > highest ||
-            (len > 0 && (uintb)(real_func_addr + len - 1) > highest)) {
+            (work.size() > 0 && (uintb)(real_func_addr + work.size() - 1) > highest)) {
             delete arch; std::remove(tmp_path);
             std::ostringstream oss;
             oss << "function range [0x" << std::hex << real_func_addr
-                << ", 0x" << (real_func_addr + len - 1)
+                << ", 0x" << (real_func_addr + work.size() - 1)
                 << "] exceeds address space highest 0x" << highest;
             return fail("[S3:range_check]", func_name, oss.str().c_str());
         }
@@ -327,8 +446,8 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
         // ------------------------------------------------------------------
         // Stage 3 — register target function symbol + followFlow
         // ------------------------------------------------------------------
-        LOGI_B("[S3] addFunction + followFlow for %s (addr=0x%llx len=%zu)",
-               func_name, (unsigned long long)real_func_addr, len);
+        LOGI_B("[S3] addFunction + followFlow for %s (addr=0x%llx len=%zu work=%zu)",
+               func_name, (unsigned long long)real_func_addr, len, work.size());
         Funcdata* fd = nullptr;
         try {
             Address funcAddr(ram, (uintb)real_func_addr);
@@ -341,13 +460,106 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
             }
 
             Address baddr(ram, (uintb)real_func_addr);
-            Address eaddr(ram, (uintb)(real_func_addr + len - 1));
+            Address eaddr(ram, (uintb)(real_func_addr + work.size() - 1));
             LOGI_B("[S3] followFlow baddr=0x%llx eaddr=0x%llx for %s",
                    (unsigned long long)real_func_addr,
-                   (unsigned long long)(real_func_addr + len - 1),
+                   (unsigned long long)(real_func_addr + work.size() - 1),
                    func_name);
             fd->followFlow(baddr, eaddr);
             LOGI_B("[S3] followFlow OK for %s", func_name);
+
+            // ----------------------------------------------------------------
+            // Stage 3.5 — minimal self-prototype fallback
+            //
+            // inject_sig() (Stage 2.5) only locks an output type for callees
+            // that appear in sigs[] with real return-type info. The target
+            // function itself is deliberately excluded from that list by the
+            // caller (peek_jni.cpp skips self when building c_sigs), so by
+            // default fd has no output lock at all here.
+            //
+            // Without a lock, ActionDeadCode is free to eliminate the value
+            // (and the instruction that produced it) flowing into this
+            // function's own RETURN if nothing else in this isolated,
+            // single-function decompile consumes it — which is exactly what
+            // happens for a function whose entire body is "read a system
+            // register, return it" (no other use exists to anchor on), or
+            // for a function whose real return value, on its very first
+            // decompile, comes from a sibling call that hasn't been learned
+            // yet. The result is a function that decompiles "successfully"
+            // but with an empty body and no return statement.
+            //
+            // We must NOT apply this unconditionally though — a genuinely
+            // void function (e.g. an exported stub with an empty body) would
+            // start "returning" whatever garbage happens to sit in X0 if we
+            // blindly forced a non-void lock on every function. So before
+            // locking anything, check whether this function's own raw
+            // p-code (right after followFlow, before any pipeline action
+            // has run) ever actually writes to the model's output storage
+            // location at all. If it never does, this is consistent with a
+            // real void function and we leave it alone, same as before this
+            // fix existed.
+            // ----------------------------------------------------------------
+            bool self_sig_supplied = false;
+            if (sigs) {
+                for (size_t i = 0; i < sig_count; ++i) {
+                    if (sigs[i].address == real_func_addr) { self_sig_supplied = true; break; }
+                }
+            }
+            if (!self_sig_supplied && !fd->getFuncProto().isOutputLocked()) {
+                try {
+                    // Resolve where this model's calling convention puts an
+                    // 8-byte return value (X0 on AAPCS64) without hand-coding
+                    // any register address ourselves.
+                    PrototypePieces probe;
+                    probe.model           = arch->defaultfp;
+                    probe.name            = func_name;
+                    probe.firstVarArgSlot = -1;
+                    probe.outtype         = arch->types->getBase(8, TYPE_UNKNOWN);
+                    std::vector<ParameterPieces> resolved;
+                    arch->defaultfp->assignParameterStorage(probe, resolved, true);
+
+                    // assignParameterStorage's first entry is conventionally
+                    // the return value's storage.
+                    bool wrote_to_output = false;
+                    if (!resolved.empty() && !resolved[0].addr.isInvalid()) {
+                        const Address& outAddr = resolved[0].addr;
+                        int4 outSize = resolved[0].type ? resolved[0].type->getSize() : 8;
+                        for (auto iter = fd->beginOpAlive(); iter != fd->endOpAlive(); ++iter) {
+                            PcodeOp* op = *iter;
+                            Varnode* outvn = op->getOut();
+                            if (!outvn) continue;
+                            if (outvn->getAddr().overlap(0, outAddr, outSize) != -1) {
+                                wrote_to_output = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (wrote_to_output) {
+                        PrototypePieces proto;
+                        proto.model           = arch->defaultfp;
+                        proto.name            = func_name;
+                        proto.firstVarArgSlot = -1;
+                        // Generic 8-byte "unknown" — wide enough to cover the
+                        // X0 return register without asserting a specific C
+                        // type we have no evidence for. Real metadata/stdlib
+                        // signatures (handled in Stage 2.5) always take
+                        // precedence over this fallback.
+                        proto.outtype = arch->types->getBase(8, TYPE_UNKNOWN);
+                        fd->getFuncProto().setPieces(proto);
+                        fd->getFuncProto().setOutputLock(true);
+                        LOGI_B("[S3.5] applied minimal self-output lock for %s "
+                               "(output storage was written)", func_name);
+                    } else {
+                        LOGI_B("[S3.5] skipped self-output lock for %s "
+                               "(output storage never written — consistent with void)",
+                               func_name);
+                    }
+                } catch (...) {
+                    // Non-fatal: fall through with whatever the pipeline
+                    // infers on its own, same as before this fix existed.
+                }
+            }
         } catch (const LowlevelError& e) {
             delete arch; std::remove(tmp_path);
             std::ostringstream detail;
