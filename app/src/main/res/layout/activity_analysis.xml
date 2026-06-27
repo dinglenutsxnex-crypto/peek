@@ -78,9 +78,10 @@
                         android:clipToPadding="false"
                         android:paddingTop="12dp"
                         android:paddingBottom="32dp"
+                        android:paddingEnd="6dp"
                         android:scrollbars="vertical"
                         android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
-                        android:scrollbarSize="2dp"
+                        android:scrollbarSize="4dp"
                         android:fadeScrollbars="false" />
 
                     <View
