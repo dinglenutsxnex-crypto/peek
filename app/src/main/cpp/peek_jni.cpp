@@ -832,7 +832,8 @@ static void ensure_stdlib_map() {
 // ---------------------------------------------------------------------------
 
 static void populate_sig_cache(AnalysisContext& ctx,
-                                const ElfParseResult& elf)
+                                const ElfParseResult& elf,
+                                const std::map<uint64_t, std::string>& func_map)
 {
     if (ctx.binary_id < 0) return;
     ensure_stdlib_map();
@@ -861,7 +862,57 @@ static void populate_sig_cache(AnalysisContext& ctx,
         sigmap[sym.address] = std::move(s);
     }
 
-    // --- Source 3: apply stdlib prototypes where name matches ---
+    // --- Source 3: PLT-style local-export thunks (e.g. "j_is_odd") ---
+    //
+    // Phase 3.5/4.5 in run_analysis() rename PLT stub addresses that target
+    // a function *within this same binary* (as opposed to an external
+    // libc import) to "j_<real_name>" — these addresses never exist in
+    // elf.functions or elf.symbols, since they were synthesized purely from
+    // GOT-relocation analysis, not from a real ELF symbol table entry. A
+    // direct call from one local function to another that happens to route
+    // through such a stub (common when a function is also dynamically
+    // exported) would otherwise have NO entry at all in the signature
+    // cache for that call's target address, leaving the call completely
+    // unresolved at decompile time — it gets neither a name nor a type,
+    // and (combined with the dead-code-elimination issue fixed previously)
+    // can end up dropping the call and its result entirely.
+    //
+    // Register each such thunk address under the REAL function's name
+    // (stripping the "j_" prefix) and copy over any signature already
+    // known for that real function (symbol-derived or stdlib), so a call
+    // through the thunk is typed exactly as if it called the real function
+    // directly.
+    for (const auto& [addr, name] : func_map) {
+        if (sigmap.count(addr)) continue;  // already has a real symbol entry
+        if (name.size() <= 2 || name[0] != 'j' || name[1] != '_') continue;
+
+        std::string real_name = name.substr(2);
+        // Find the real function's own signature, if we already have one,
+        // by name (the real function's own address is a separate sigmap
+        // entry from Source 1/2 — look it up by matching name rather than
+        // address, since we don't have its address handy here without an
+        // extra reverse lookup).
+        const FuncSignature* real_sig = nullptr;
+        for (const auto& [a, s] : sigmap) {
+            if (s.name == real_name) { real_sig = &s; break; }
+        }
+
+        FuncSignature s;
+        s.address = addr;
+        s.name    = real_name;          // resolve the call to the real name,
+                                         // not the synthetic "j_" thunk name
+        if (real_sig) {
+            s.return_type = real_sig->return_type;
+            s.param_count = real_sig->param_count;
+            s.params_csv  = real_sig->params_csv;
+            s.source      = real_sig->source;
+        } else {
+            s.source = "symbol";
+        }
+        sigmap[addr] = std::move(s);
+    }
+
+    // --- Source 4: apply stdlib prototypes where name matches ---
     for (auto& [addr, sig] : sigmap) {
         // Strip thunk prefix for lookup ("j_malloc" → "malloc").
         std::string lookup_name = sig.name;
@@ -910,7 +961,18 @@ static void ensure_sigs_loaded(AnalysisContext& ctx) {
              (long long)ctx.binary_id);
         ElfParseResult elf = elf_parse(ctx.file_path);
         if (elf.ok) {
-            populate_sig_cache(ctx, elf);
+            // This path re-parses the ELF from scratch with no access to a
+            // freshly-computed func_map (that only exists inside
+            // run_analysis()). Reconstruct an equivalent map from the
+            // function list already persisted to the DB during the
+            // original analysis — it already contains the correctly
+            // thunk-renamed entries (e.g. "j_is_odd") that Source 3 in
+            // populate_sig_cache() needs.
+            std::map<uint64_t, std::string> func_map_from_db;
+            for (const auto& f : ctx.db->get_functions(ctx.binary_id)) {
+                func_map_from_db[(uint64_t)f.address] = f.name;
+            }
+            populate_sig_cache(ctx, elf, func_map_from_db);
         }
     }
 
@@ -1248,7 +1310,7 @@ static bool run_analysis(AnalysisContext& ctx) {
     // Build and persist the cross-function signature cache from the freshly
     // analysed ELF.  This only runs for new binaries; cache-hit binaries load
     // signatures from the DB lazily on first decompile (ensure_sigs_loaded).
-    populate_sig_cache(ctx, elf);
+    populate_sig_cache(ctx, elf, func_map);
 
     return true;
 }
