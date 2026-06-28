@@ -195,14 +195,15 @@ class PseudocodeView @JvmOverloads constructor(
         // Max indent level present
         val maxLevel = (lineIndents.maxOrNull() ?: 0)
 
-        // For each indent level L, draw a guide at the column where that
-        // indent starts — i.e. at (L-1)*indentUnit characters from codeStartX.
-        // The guide spans from the first line at depth>=L down to and including
-        // the closing line at depth L-1 that ends the block (the `}` / `else`).
+        // For each indent level L, draw a guide aligned to where that level's
+        // leading spaces end in the rendered text — measured directly via Paint
+        // so it's pixel-perfect regardless of font metrics.
         for (level in 1..maxLevel) {
-            // Guide sits at the column of the (level-1)th indent stop + half a char,
-            // so it visually lines up with the opening brace of the parent scope.
-            val guideX = codeStartX + ((level - 1) * indentUnitSpaces + indentUnitSpaces / 2f) * charWidth
+            // Measure exactly how wide (level * indentUnit) spaces are, then place
+            // the guide half a char-width before that — sitting in the "gutter" of
+            // the indent, not on top of any character.
+            val leadingSpaces = " ".repeat((level - 1) * indentUnitSpaces)
+            val guideX = codeStartX + codePaint.measureText(leadingSpaces) + charWidth * 0.5f
 
             var runStart = -1
             var runEnd   = -1
@@ -213,24 +214,15 @@ class PseudocodeView @JvmOverloads constructor(
 
                 when {
                     depth >= level -> {
-                        // Inside or at this indent level — part of the run
+                        // This line is inside the block at this level
                         if (runStart < 0) runStart = i
                         runEnd = i
                     }
                     isBlank && runStart >= 0 -> {
-                        // Blank line inside a run — keep going but don't extend runEnd
-                    }
-                    depth == level - 1 && runStart >= 0 -> {
-                        // Closing line (the `}` or `else {`) — include it in the run
-                        runEnd = i
-                        val segTop = lineTopY[runStart]
-                        val segBot = lineTopY[runEnd] + lineH[runEnd]
-                        canvas.drawLine(guideX, segTop, guideX, segBot, indentGuidePaint)
-                        runStart = -1
-                        runEnd   = -1
+                        // Blank line — don't extend runEnd but keep run open
                     }
                     else -> {
-                        // Jumped back more than one level — close without including this line
+                        // Back to shallower depth — close the run (don't include this line)
                         if (runStart >= 0) {
                             val segTop = lineTopY[runStart]
                             val segBot = lineTopY[runEnd] + lineH[runEnd]
@@ -241,11 +233,8 @@ class PseudocodeView @JvmOverloads constructor(
                     }
                 }
             }
-            // Close any open run at end of file
             if (runStart >= 0) {
-                val segTop = lineTopY[runStart]
-                val segBot = lineTopY[runEnd] + lineH[runEnd]
-                canvas.drawLine(guideX, segTop, guideX, segBot, indentGuidePaint)
+                canvas.drawLine(guideX, lineTopY[runStart], guideX, lineTopY[runEnd] + lineH[runEnd], indentGuidePaint)
             }
         }
 
