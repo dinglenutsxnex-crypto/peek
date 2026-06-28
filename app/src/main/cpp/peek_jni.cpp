@@ -2025,6 +2025,14 @@ static std::string resolve_ghidra_tokens(const std::string& code,
         {"DAT_",        4, true,  false},
         {"LAB_",        4, false, false},
         {"EXTR_",       5, false, false},
+        // Ghidra's lowercase variant: func_0x<hex> — emitted for stripped
+        // Unity/NDK binaries and some Ghidra analysis configurations.
+        // Prefix length 7 = strlen("func_0x"). Hex digits follow immediately.
+        {"func_0x",     7, false, false},
+        // Ghidra emits unk_<hex> directly for unresolved data symbols (not
+        // through DAT_→unk_ fallback). Treat as data: try C-string, then
+        // sym_map, then keep the existing unk_<hex> as-is.
+        {"unk_",        4, true,  false},
     };
     static const size_t kTokenCount = sizeof(kTokens) / sizeof(kTokens[0]);
 

@@ -1264,10 +1264,28 @@ static bool var_still_used(const std::vector<std::string>& lines,
 
 static std::string resolve_xunknown_types(const std::string& code) {
     static const struct { const char* from; const char* to; } kMap[] = {
+        // Ghidra width-only placeholders
         {"xunknown1", "uint8_t"},
         {"xunknown2", "uint16_t"},
         {"xunknown4", "uint32_t"},
         {"xunknown8", "uint64_t"},
+        // Ghidra standard short type names (e.g. uint4, int8, uint1 etc.)
+        // Longer entries first so "uint16" doesn't partially match "uint1".
+        {"uint16",  "uint16_t"},
+        {"uint32",  "uint32_t"},
+        {"uint64",  "uint64_t"},
+        {"int16",   "int16_t"},
+        {"int32",   "int32_t"},
+        {"int64",   "int64_t"},
+        {"uint8",   "uint8_t"},
+        {"int8",    "int8_t"},
+        // Single-digit short forms used by older Ghidra versions
+        {"uint1",   "uint8_t"},
+        {"uint2",   "uint16_t"},
+        {"uint4",   "uint32_t"},
+        {"int1",    "int8_t"},
+        {"int2",    "int16_t"},
+        {"int4",    "int32_t"},
     };
     std::string result = code;
     for (const auto& m : kMap) {
@@ -1287,6 +1305,133 @@ static std::string resolve_xunknown_types(const std::string& code) {
         }
     }
     return result;
+}
+
+// ---------------------------------------------------------------------------
+// U0c2. ARM64 register-parameter name resolution
+//
+// Ghidra names function parameters after the physical ARM64 registers when it
+// can't determine the calling convention: in_x0..in_x7 (64-bit integer args),
+// in_w0..in_w7 (32-bit views of the same registers), in_x8 (indirect return
+// pointer), in_x18 (platform thread pointer), in_d0..in_d7 / in_s0..in_s7
+// (float/double args).
+//
+// This pass renames them to the idiomatic IDA-style names:
+//   in_x0 / in_w0 → param1
+//   in_x1 / in_w1 → param2
+//   ...
+//   in_x7 / in_w7 → param8
+//   in_x8         → ret_ptr     (pointer used for indirect struct return)
+//   in_x18        → tls_ptr     (Android TLS / platform thread pointer)
+//   in_d0..in_d7  → fparam1..fparam8
+//   in_s0..in_s7  → fparam1..fparam8  (same slots, 32-bit float view)
+//
+// Replacements must be done longest-name-first to avoid in_x1 accidentally
+// consuming the leading chars of in_x18.
+// ---------------------------------------------------------------------------
+
+static std::string resolve_register_params(const std::string& code) {
+    struct Mapping { const char* from; const char* to; };
+
+    // Longest patterns first (in_x18 before in_x1, in_d0 before in_d, etc.)
+    static const Mapping kSpecial[] = {
+        {"in_x18", "tls_ptr"},
+        {"in_x8",  "ret_ptr"},
+    };
+
+    // Numbered integer registers: indices 7 down to 0, both x and w widths.
+    // We process larger indices first to avoid partial matches.
+    static const struct { const char* xname; const char* wname; const char* param; } kIntRegs[] = {
+        {"in_x7", "in_w7", "param8"},
+        {"in_x6", "in_w6", "param7"},
+        {"in_x5", "in_w5", "param6"},
+        {"in_x4", "in_w4", "param5"},
+        {"in_x3", "in_w3", "param4"},
+        {"in_x2", "in_w2", "param3"},
+        {"in_x1", "in_w1", "param2"},
+        {"in_x0", "in_w0", "param1"},
+    };
+
+    // Float/double registers d0..d7 and s0..s7 (32-bit view of same slot).
+    static const struct { const char* dname; const char* sname; const char* param; } kFpRegs[] = {
+        {"in_d7", "in_s7", "fparam8"},
+        {"in_d6", "in_s6", "fparam7"},
+        {"in_d5", "in_s5", "fparam6"},
+        {"in_d4", "in_s4", "fparam5"},
+        {"in_d3", "in_s3", "fparam4"},
+        {"in_d2", "in_s2", "fparam3"},
+        {"in_d1", "in_s1", "fparam2"},
+        {"in_d0", "in_s0", "fparam1"},
+    };
+
+    std::string result = code;
+
+    for (const auto& sp : kSpecial)
+        result = replace_ident(result, sp.from, sp.to);
+
+    for (const auto& ir : kIntRegs) {
+        result = replace_ident(result, ir.xname, ir.param);
+        result = replace_ident(result, ir.wname, ir.param);
+    }
+
+    for (const auto& fr : kFpRegs) {
+        result = replace_ident(result, fr.dname, fr.param);
+        result = replace_ident(result, fr.sname, fr.param);
+    }
+
+    return result;
+}
+
+// ---------------------------------------------------------------------------
+// U0c3. Ghidra goto-label simplification
+//
+// Ghidra emits control-flow labels in the form  code_r0x<hex>:  and uses
+// them in  goto code_r0x<hex>;  statements.  This pass rewrites them to the
+// shorter  L_<hex>:  /  goto L_<hex>;  form for readability.
+// ---------------------------------------------------------------------------
+
+static std::string resolve_goto_labels(const std::string& code) {
+    static const char kPrefix[] = "code_r0x";
+    static const size_t kPrefixLen = sizeof(kPrefix) - 1;   // 8
+
+    std::string out;
+    out.reserve(code.size());
+    size_t pos = 0;
+
+    while (pos < code.size()) {
+        size_t f = code.find(kPrefix, pos);
+        if (f == std::string::npos) {
+            out.append(code, pos, std::string::npos);
+            break;
+        }
+
+        // Word-boundary check: must not be preceded by an identifier char.
+        if (f > 0 && is_id(code[f - 1])) {
+            out.append(code, pos, f - pos + 1);
+            pos = f + 1;
+            continue;
+        }
+
+        // Consume hex digits after the prefix.
+        size_t h = f + kPrefixLen;
+        size_t hs = h;
+        while (h < code.size() && is_hex(code[h])) ++h;
+        size_t hex_len = h - hs;
+
+        // Must have at least 1 hex digit and end at a non-identifier char.
+        if (hex_len == 0 || (h < code.size() && is_id(code[h]))) {
+            out.append(code, pos, f - pos + 1);
+            pos = f + 1;
+            continue;
+        }
+
+        out.append(code, pos, f - pos);
+        out += 'L';
+        out += '_';
+        out.append(code, hs, hex_len);   // keep the hex digits as-is
+        pos = h;
+    }
+    return out;
 }
 
 // ---------------------------------------------------------------------------
@@ -2049,7 +2194,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V20\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V21\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -2079,8 +2224,20 @@ std::string jni_annotate(const std::string& func_name,
 
     // ---- U0b. Resolve Ghidra width-only type placeholders ------------------
     // xunknown1/2/4/8 → uint8_t/uint16_t/uint32_t/uint64_t.
+    // Also resolves Ghidra short type names: uint1/2/4/8, int1/2/4/8, etc.
     // Must run before other passes so they see real C type tokens.
     result = resolve_xunknown_types(result);
+
+    // ---- U0b2. ARM64 register-parameter name resolution -------------------
+    // in_x0..in_x7 / in_w0..in_w7 → param1..param8
+    // in_d0..in_d7 / in_s0..in_s7 → fparam1..fparam8
+    // in_x8 → ret_ptr, in_x18 → tls_ptr
+    // Run before U0c so pseudoop expansion sees clean param names.
+    result = resolve_register_params(result);
+
+    // ---- U0b3. Ghidra goto-label simplification ---------------------------
+    // code_r0x<hex>: / goto code_r0x<hex>; → L_<hex>: / goto L_<hex>;
+    result = resolve_goto_labels(result);
 
     // ---- U0c. Resolve Ghidra arithmetic pseudo-ops -------------------------
     // CONCAT<A><B>(hi,lo) → bit-shift expression.
