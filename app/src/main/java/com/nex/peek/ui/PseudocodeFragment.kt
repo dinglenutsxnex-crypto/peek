@@ -29,6 +29,7 @@ class PseudocodeFragment : Fragment() {
 
     private val vm: AnalysisViewModel by activityViewModels()
     private var currentFunc: FunctionInfo? = null
+    private var rawCode = ""
 
     override fun onCreateView(
         inflater: LayoutInflater, container: ViewGroup?, savedInstanceState: Bundle?
@@ -47,7 +48,7 @@ class PseudocodeFragment : Fragment() {
 
     private fun loadFunction(fn: FunctionInfo) {
         currentFunc = fn
-        b.tvPseudocode.text = ""
+        rawCode = ""
         b.tvEmpty.visibility = View.GONE
         b.btnCopy.visibility = View.GONE
         b.progressBar.visibility = View.VISIBLE
@@ -71,16 +72,16 @@ class PseudocodeFragment : Fragment() {
                 }
                 b.tvEmpty.visibility = View.VISIBLE
             } else {
-                b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
+                rawCode = code
+                b.pseudocodeView.setCode(PseudocodeHighlighter.highlight(code))
                 b.btnCopy.visibility = View.VISIBLE
             }
         }
     }
 
     private fun copyToClipboard() {
-        val text = b.tvPseudocode.text.toString()
-        if (text.isEmpty()) return
-        val clip = ClipData.newPlainText("pseudocode", text)
+        if (rawCode.isEmpty()) return
+        val clip = ClipData.newPlainText("pseudocode", rawCode)
         (requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager)
             .setPrimaryClip(clip)
         flashCopyButton()
