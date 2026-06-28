@@ -840,9 +840,208 @@ static const StdlibProto kStdlibProtos[] = {
     { "AAssetManager_fromJava", "ptr", 2, "ptr,ptr"                },
     { "AAsset_read",     "int",  3, "ptr,void*,size_t"             },
     { "AAsset_close",    "void", 1, "ptr"                          },
+    // --- STL std::string (libstdc++ / libc++ ABI, AArch64) ---
+    // Mangled names for the most common basic_string<char> methods.
+    // These show up as func_0x... calls in stripped Unity/NDK binaries.
+    { "_ZNSsC1EPKcRKSaIcE",  "void", 2, "ptr,char*"               }, // string(const char*, alloc)
+    { "_ZNSsC1EPKc",         "void", 1, "char*"                    }, // string(const char*)
+    { "_ZNSsC1ERKS_",        "void", 1, "ptr"                      }, // string(const string&)
+    { "_ZNSsC1Ev",           "void", 0, ""                         }, // string()
+    { "_ZNSsD1Ev",           "void", 0, ""                         }, // ~string()
+    { "_ZNSsaSERKSs",        "ptr",  1, "ptr"                      }, // operator=(const string&)
+    { "_ZNSsaSEPKc",         "ptr",  1, "char*"                    }, // operator=(const char*)
+    { "_ZNSs6appendEPKc",    "ptr",  1, "char*"                    }, // append(const char*)
+    { "_ZNSs6appendERKSs",   "ptr",  1, "ptr"                      }, // append(const string&)
+    { "_ZNSs6appendEPKcm",   "ptr",  2, "char*,size_t"             }, // append(const char*, n)
+    { "_ZNSs6assignEPKc",    "ptr",  1, "char*"                    }, // assign(const char*)
+    { "_ZNSs6assignERKSs",   "ptr",  1, "ptr"                      }, // assign(const string&)
+    { "_ZNSs4findEcm",       "size_t", 2, "int,size_t"             }, // find(char, pos)
+    { "_ZNSs4findEPKcm",     "size_t", 2, "char*,size_t"           }, // find(const char*, pos)
+    { "_ZNSs6substrEmm",     "ptr",  2, "size_t,size_t"            }, // substr(pos, len)
+    { "_ZNSs5eraseEmm",      "ptr",  2, "size_t,size_t"            }, // erase(pos, len)
+    { "_ZNSs6insertEmPKc",   "ptr",  2, "size_t,char*"             }, // insert(pos, s)
+    { "_ZNSs7replaceEmmPKc", "ptr",  3, "size_t,size_t,char*"      }, // replace
+    { "_ZNKSs4sizeEv",       "size_t", 0, ""                       }, // size()
+    { "_ZNKSs6lengthEv",     "size_t", 0, ""                       }, // length()
+    { "_ZNKSs5emptyEv",      "bool", 0, ""                         }, // empty()
+    { "_ZNKSs5c_strEv",      "char*", 0, ""                        }, // c_str()
+    { "_ZNKSs4dataEv",       "char*", 0, ""                        }, // data()
+    { "_ZNKSseqERKSs",       "bool", 1, "ptr"                      }, // operator==(const string&)
+    { "_ZNKSsltERKSs",       "bool", 1, "ptr"                      }, // operator<
+    { "_ZStplIcSt11char_traitsIcESaIcEENSt7__cxx1112basic_stringIT_T0_T1_EERKS8_PKS5_",
+                             "ptr",  2, "ptr,char*"                 }, // operator+(string, const char*)
+    // libc++ variants (clang NDK r23+)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1EPKc",
+                             "void", 1, "char*"                     },
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
+                             "void", 0, ""                          },
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4sizeEv",
+                             "size_t", 0, ""                        },
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5c_strEv",
+                             "char*", 0, ""                         },
+    // --- STL std::vector (common operations) ---
+    { "_ZNSt6vectorIiSaIiEEpbERKi",  "void", 1, "ptr"              }, // push_back(int)
+    { "_ZNSt6vectorIfSaIfEEpbERKf",  "void", 1, "float"            }, // push_back(float)
+    { "_ZNKSt6vectorIiSaIiEE4sizeEv","size_t", 0, ""               }, // size()
+    { "_ZNKSt6vectorIiSaIiEE5emptyEv","bool", 0, ""                }, // empty()
+    { "_ZNSt6vectorIiSaIiEE5clearEv", "void", 0, ""                }, // clear()
+    { "_ZNSt6vectorIiSaIiEE6resizeEm","void", 1, "size_t"          }, // resize(n)
+    { "_ZNSt6vectorIiSaIiEE7reserveEm","void",1, "size_t"          }, // reserve(n)
+    // --- STL std::unordered_map / std::map ---
+    { "_ZNSt3__113unordered_mapINSt7__cxx1112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEiNS_4hashIS7_EENS_8equal_toIS7_EENS4_INS_4pairIKS7_iEEEEED1Ev",
+                             "void", 0, ""                          }, // ~unordered_map
+    // --- STL allocator / new/delete internals ---
+    { "_ZnwmSt11align_val_t","void*", 2, "size_t,size_t"           }, // operator new(size_t, align_val_t)
+    { "_ZdlPvSt11align_val_t","void", 2, "void*,size_t"            }, // operator delete(void*, align_val_t)
+    { "_ZdlPvmSt11align_val_t","void",3, "void*,size_t,size_t"     }, // operator delete(void*, size_t, align_val_t)
+    // --- il2cpp codegen helpers (Unity AArch64) ---
+    // These appear in virtually every il2cpp-compiled Unity game as
+    // func_0x... calls from managed method implementations.
+    { "il2cpp_codegen_initialize_runtime_metadata",
+                             "void", 1, "ptr"                       },
+    { "il2cpp_codegen_initialize_method_metadata",
+                             "void", 1, "ptr"                       },
+    { "il2cpp_codegen_raise_exception",
+                             "void", 1, "ptr"                       },
+    { "il2cpp_codegen_raise_null_reference_exception",
+                             "void", 0, ""                          },
+    { "il2cpp_codegen_raise_index_out_of_range_exception",
+                             "void", 0, ""                          },
+    { "il2cpp_codegen_class_from_type",
+                             "ptr",  1, "ptr"                       },
+    { "il2cpp_codegen_object_new",
+                             "ptr",  1, "ptr"                       },
+    { "il2cpp_codegen_array_new_specific",
+                             "ptr",  2, "ptr,int"                   },
+    { "il2cpp_codegen_array_new",
+                             "ptr",  2, "ptr,int"                   },
+    { "il2cpp_array_new_specific",
+                             "ptr",  2, "ptr,int"                   },
+    { "il2cpp_array_length",  "int", 1, "ptr"                       },
+    { "il2cpp_codegen_string_new_from_char_array",
+                             "ptr",  2, "ptr,int"                   },
+    { "il2cpp_string_new",    "ptr",  1, "char*"                    },
+    { "il2cpp_string_new_len","ptr",  2, "char*,uint"               },
+    { "il2cpp_codegen_string_new_wrapper",
+                             "ptr",  1, "char*"                     },
+    { "il2cpp_value_box",     "ptr",  2, "ptr,ptr"                  },
+    { "il2cpp_object_unbox",  "ptr",  1, "ptr"                      },
+    { "il2cpp_runtime_invoke","ptr",  4, "ptr,ptr,ptr,ptr"          },
+    { "il2cpp_runtime_invoke_convert_args",
+                             "ptr",  5, "ptr,ptr,ptr,int,ptr"       },
+    { "il2cpp_runtime_class_init",
+                             "void", 1, "ptr"                       },
+    { "IL2CPP_RUNTIME_CLASS_INIT",
+                             "void", 1, "ptr"                       },
+    { "il2cpp_gc_alloc_fixed", "ptr", 1, "size_t"                   },
+    { "il2cpp_gc_free_fixed",  "void",1, "ptr"                      },
+    { "il2cpp_gc_collect",     "void",1, "int"                      },
+    { "il2cpp_monitor_enter",  "void",1, "ptr"                      },
+    { "il2cpp_monitor_exit",   "void",1, "ptr"                      },
+    { "il2cpp_monitor_try_enter","bool",2, "ptr,uint"               },
+    { "il2cpp_monitor_pulse",  "void",1, "ptr"                      },
+    { "il2cpp_monitor_pulse_all","void",1,"ptr"                     },
+    { "il2cpp_monitor_wait",   "void",1, "ptr"                      },
+    { "il2cpp_type_get_object","ptr",  1, "ptr"                     },
+    { "il2cpp_method_get_name","char*",1, "ptr"                     },
+    { "il2cpp_class_get_name", "char*",1, "ptr"                     },
+    { "il2cpp_class_get_namespace","char*",1,"ptr"                  },
+    { "il2cpp_class_get_parent","ptr",1, "ptr"                      },
+    { "il2cpp_class_is_assignable_from","bool",2,"ptr,ptr"          },
+    { "il2cpp_class_from_name","ptr",  3, "ptr,char*,char*"         },
+    { "il2cpp_domain_get",     "ptr",  0, ""                        },
+    { "il2cpp_domain_get_assemblies","ptr",2,"ptr,ptr"              },
+    { "il2cpp_assembly_get_image","ptr",1,"ptr"                     },
+    { "il2cpp_image_get_class","ptr",  2, "ptr,uint"                },
+    { "il2cpp_field_get_value","void", 3, "ptr,ptr,ptr"             },
+    { "il2cpp_field_set_value","void", 3, "ptr,ptr,ptr"             },
+    { "il2cpp_field_static_get_value","void",2,"ptr,ptr"            },
+    { "il2cpp_field_static_set_value","void",2,"ptr,ptr"            },
+    { "il2cpp_property_get_get_method","ptr",1,"ptr"                },
+    { "il2cpp_object_get_class","ptr", 1, "ptr"                     },
+    { "il2cpp_object_get_virtual_method","ptr",2,"ptr,ptr"          },
+    { "il2cpp_object_is_inst", "ptr",  2, "ptr,ptr"                 },
+    { "il2cpp_resolve_icall",  "ptr",  1, "char*"                   },
+    { "il2cpp_add_internal_call","void",2,"char*,ptr"               },
+    { "il2cpp_thread_attach",  "ptr",  1, "ptr"                     },
+    { "il2cpp_thread_detach",  "void", 1, "ptr"                     },
+    { "il2cpp_thread_current", "ptr",  0, ""                        },
+    // il2cpp codegen cast / type check helpers
+    { "IsInstClass",           "ptr",  2, "ptr,ptr"                 },
+    { "IsInstSealed",          "ptr",  2, "ptr,ptr"                 },
+    { "IsInstInterface",       "ptr",  2, "ptr,ptr"                 },
+    { "CastclassClass",        "ptr",  2, "ptr,ptr"                 },
+    { "CastclassSealed",       "ptr",  2, "ptr,ptr"                 },
+    { "CastclassInterface",    "ptr",  2, "ptr,ptr"                 },
+    { "il2cpp_codegen_is_assignable_from","bool",2,"ptr,ptr"        },
+    // il2cpp exception helpers
+    { "il2cpp_codegen_get_message_of_null_reference_exception",
+                             "ptr",  0, ""                          },
+    { "il2cpp_codegen_get_argument_exception",
+                             "ptr",  2, "char*,char*"               },
+    { "il2cpp_codegen_get_argument_null_exception",
+                             "ptr",  1, "char*"                     },
+    { "il2cpp_codegen_get_invalid_operation_exception",
+                             "ptr",  1, "char*"                     },
+    { "il2cpp_codegen_get_overflow_exception",
+                             "ptr",  0, ""                          },
+    { "il2cpp_codegen_get_not_supported_exception",
+                             "ptr",  1, "char*"                     },
+    { "il2cpp_codegen_get_format_exception",
+                             "ptr",  1, "char*"                     },
+    // il2cpp boxing helpers for value types
+    { "Box",                   "ptr",  2, "ptr,ptr"                 },
+    { "UnBox",                 "ptr",  1, "ptr"                     },
+    { "UnBox_Any",             "ptr",  2, "ptr,ptr"                 },
+    { "Castclass",             "ptr",  2, "ptr,ptr"                 },
+    { "IsInst",                "ptr",  2, "ptr,ptr"                 },
+    // --- Unity engine NDK helpers (libunity.so exports) ---
+    { "UnitySendMessage",      "void", 3, "char*,char*,char*"       },
+    { "UnityGetGLContext",     "ptr",  0, ""                        },
 };
 static const size_t kStdlibProtoCount =
     sizeof(kStdlibProtos) / sizeof(kStdlibProtos[0]);
+
+// ---------------------------------------------------------------------------
+// il2cpp method name pattern detection
+//
+// il2cpp-compiled managed methods are named:
+//   ClassName_MethodName_m<decimal-id>
+// e.g. Player_TakeDamage_m1234567, NetworkManager_Update_m987654
+//
+// Returns true if `name` matches this pattern, and extracts a human-readable
+// display name (e.g. "Player::TakeDamage") into `out_display`.
+// ---------------------------------------------------------------------------
+static bool is_il2cpp_method(const std::string& name, std::string* out_display = nullptr) {
+    if (name.size() < 5) return false;
+    size_t underscore_m = std::string::npos;
+    size_t pos = name.size();
+    while (pos > 0) {
+        --pos;
+        if (!std::isdigit((unsigned char)name[pos])) {
+            if (pos >= 1 && name[pos] == 'm' && name[pos - 1] == '_') {
+                size_t digits_start = pos + 1;
+                if (digits_start < name.size() &&
+                    std::isdigit((unsigned char)name[digits_start])) {
+                    underscore_m = pos - 1;
+                }
+            }
+            break;
+        }
+    }
+    if (underscore_m == std::string::npos || underscore_m == 0) return false;
+
+    if (out_display) {
+        std::string base = name.substr(0, underscore_m);
+        size_t last_sep = base.rfind('_');
+        if (last_sep != std::string::npos && last_sep > 0) {
+            *out_display = base.substr(0, last_sep) + "::" + base.substr(last_sep + 1);
+        } else {
+            *out_display = base;
+        }
+    }
+    return true;
+}
 
 // Build a name→proto map for O(1) lookup during signature population.
 static std::unordered_map<std::string, const StdlibProto*> g_stdlib_map;
@@ -949,7 +1148,7 @@ static void populate_sig_cache(AnalysisContext& ctx,
         sigmap[addr] = std::move(s);
     }
 
-    // --- Source 4: apply stdlib prototypes where name matches ---
+    // --- Source 4: apply stdlib/il2cpp prototypes where name matches ---
     for (auto& [addr, sig] : sigmap) {
         // Strip thunk prefix for lookup ("j_malloc" → "malloc").
         std::string lookup_name = sig.name;
@@ -957,13 +1156,41 @@ static void populate_sig_cache(AnalysisContext& ctx,
             lookup_name[0] == 'j' && lookup_name[1] == '_')
             lookup_name = lookup_name.substr(2);
 
+        // 4a. Stdlib / il2cpp named-function table match.
         auto it = g_stdlib_map.find(lookup_name);
         if (it != g_stdlib_map.end()) {
             const StdlibProto* p = it->second;
             sig.return_type = p->return_type ? p->return_type : "";
             sig.param_count = p->param_count;
             sig.params_csv  = p->params_csv ? p->params_csv : "";
-            sig.source      = "stdlib";
+            // Tag il2cpp named helpers differently from libc/C++ runtime.
+            bool is_il2cpp_helper =
+                lookup_name.rfind("il2cpp_", 0) == 0 ||
+                lookup_name.rfind("IL2CPP_", 0) == 0 ||
+                lookup_name == "IsInstClass"      || lookup_name == "IsInstSealed"  ||
+                lookup_name == "IsInstInterface"  || lookup_name == "CastclassClass"||
+                lookup_name == "CastclassSealed"  || lookup_name == "CastclassInterface" ||
+                lookup_name == "Box"   || lookup_name == "UnBox" ||
+                lookup_name == "UnBox_Any" || lookup_name == "Castclass" ||
+                lookup_name == "IsInst" || lookup_name == "UnitySendMessage";
+            sig.source = is_il2cpp_helper ? "il2cpp" : "stdlib";
+            continue;
+        }
+
+        // 4b. il2cpp generated managed-method pattern: ClassName_Method_m<id>.
+        // These aren't in the static table (there are millions of possible
+        // names), but we can recognise the pattern and apply a generic
+        // il2cpp managed-method prototype: ptr return, first param is
+        // the "this" pointer (or null for static), last param is
+        // Il2CppMethodInfo* (always ptr). param_count=-1 (unknown argc)
+        // is the honest answer since we don't know the C# signature,
+        // but we set source="il2cpp" so the decompiler at least names
+        // the call site correctly and trusts the return value.
+        if (sig.source != "il2cpp" && is_il2cpp_method(lookup_name)) {
+            sig.return_type = "ptr";
+            sig.param_count = -1;
+            sig.params_csv  = "";
+            sig.source      = "il2cpp";
         }
     }
 
