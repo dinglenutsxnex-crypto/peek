@@ -1,2 +1,3 @@
 - [PEEK Android project](peek-android.md) — pure Android NDK project, no web server, no Replit preview; build via GitHub Actions CI
 - [Ghidra decompiler wiring](ghidra-decompiler-wiring.md) — how the Ghidra pipeline is plumbed into the Android app (bridge pattern, spec assets, ABI isolation)
+- [Pseudocode pass pipeline](pseudocode-passes.md) — decompile pipeline pass order and what each pass does; cache tag must be bumped on any pass change

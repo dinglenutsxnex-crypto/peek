@@ -1290,6 +1290,240 @@ static std::string resolve_xunknown_types(const std::string& code) {
 }
 
 // ---------------------------------------------------------------------------
+// U0c. Ghidra arithmetic pseudo-op resolution
+//
+// Ghidra's p-code decompiler emits several arithmetic primitives with no
+// direct C equivalent.  This pass rewrites them to readable C expressions
+// before any other pass sees the pseudocode:
+//
+//   CONCAT<A><B>(hi, lo)  — bit-concatenate two values into a wider type.
+//       hi occupies the upper A bytes, lo the lower B bytes.
+//       Expands to: ((acc_type)(hi) << (B*8)) | (uint_B)(lo)
+//       Common: CONCAT44 = make int64 from two int32s
+//               CONCAT22 = make int32 from two int16s
+//               CONCAT11 = make int16 from two int8s
+//
+//   CARRY<N>(x, y)    — carry flag of unsigned N-byte add.
+//       Expands to: ((uN)(x) + (uN)(y) < (uN)(x))
+//
+//   SCARRY<N>(x, y)   — overflow flag of signed N-byte add.
+//       Expands to: __OFADD__(x, y)   (with macro definition prepended)
+//
+//   SBORROW<N>(x, y)  — overflow flag of signed N-byte subtract.
+//       Expands to: __OFSUB__(x, y)   (with macro definition prepended)
+//
+//   SUB<N>(x, y)      — typed subtraction; expands to (x - y).
+//
+// A comment block defining __OFADD__ / __OFSUB__ is prepended only when
+// those macros are actually used in the output.
+// ---------------------------------------------------------------------------
+
+// Extract two comma-separated arguments from inside balanced parentheses.
+// `open` is the index of the opening '('.  Returns true on success and sets
+// arg1, arg2, and close_end (index one past the closing ')').
+static bool split_call_args(const std::string& code, size_t open,
+                              std::string& arg1, std::string& arg2,
+                              size_t& close_end) {
+    if (open >= code.size() || code[open] != '(') return false;
+    int depth = 1;
+    size_t comma = std::string::npos;
+    size_t i = open + 1;
+    while (i < code.size() && depth > 0) {
+        char c = code[i];
+        if (c == '(' || c == '[' || c == '{') {
+            ++depth;
+        } else if (c == ')' || c == ']' || c == '}') {
+            if (--depth == 0) break;
+        } else if (c == ',' && depth == 1 && comma == std::string::npos) {
+            comma = i;
+        }
+        ++i;
+    }
+    if (depth != 0 || comma == std::string::npos) return false;
+
+    auto trim = [&](size_t s, size_t e) -> std::string {
+        while (s < e && (code[s] == ' ' || code[s] == '\t')) ++s;
+        while (e > s && (code[e-1] == ' ' || code[e-1] == '\t')) --e;
+        return std::string(code, s, e - s);
+    };
+
+    arg1 = trim(open + 1, comma);
+    arg2 = trim(comma + 1, i);
+    close_end = i + 1;   // one past ')'
+    return true;
+}
+
+// Unsigned C type for N bytes.
+static const char* uint_ctype(int n) {
+    if (n <= 1) return "unsigned char";
+    if (n <= 2) return "unsigned short";
+    if (n <= 4) return "unsigned int";
+    return "unsigned long long";
+}
+
+// Signed accumulator C type for N bytes (result of CONCAT, shift-target).
+static const char* sint_acc_ctype(int n) {
+    if (n <= 1) return "signed char";
+    if (n <= 2) return "short";
+    if (n <= 4) return "int";
+    return "long long";
+}
+
+static std::string resolve_ghidra_pseudoops(const std::string& code) {
+    if (code.empty()) return code;
+
+    bool need_ofadd = false;
+    bool need_ofsub = false;
+
+    // Keyword table.  Longer keywords first so "SCARRY"/"SBORROW" match before
+    // a hypothetical "SCONCAT" etc.  (The scan finds the earliest occurrence
+    // anyway, so ordering only matters for ties, but it's good practice.)
+    struct Pat { const char* kw; size_t klen; int kind; };
+    static const Pat kPats[] = {
+        {"SBORROW", 7, 3},
+        {"SCARRY",  6, 2},
+        {"CONCAT",  6, 0},
+        {"CARRY",   5, 1},
+        {"SUB",     3, 4},
+    };
+    static const size_t kNPats = sizeof(kPats) / sizeof(kPats[0]);
+
+    std::string out;
+    out.reserve(code.size() + 512);
+    size_t pos = 0;
+
+    while (pos < code.size()) {
+        // Find the earliest keyword match.
+        size_t earliest = std::string::npos;
+        size_t e_klen   = 0;
+        int    e_kind   = -1;
+        for (size_t pi = 0; pi < kNPats; ++pi) {
+            size_t f = code.find(kPats[pi].kw, pos);
+            if (f < earliest) {
+                earliest = f;
+                e_klen   = kPats[pi].klen;
+                e_kind   = kPats[pi].kind;
+            }
+        }
+
+        if (earliest == std::string::npos) {
+            out.append(code, pos, std::string::npos);
+            break;
+        }
+
+        // Word-boundary check: must not be immediately preceded by [A-Za-z0-9_].
+        if (earliest > 0 && is_id(code[earliest - 1])) {
+            out.append(code, pos, earliest - pos + 1);
+            pos = earliest + 1;
+            continue;
+        }
+
+        // Read digit suffix(es) immediately after the keyword.
+        size_t p = earliest + e_klen;
+        size_t digit_start = p;
+        while (p < code.size() && std::isdigit((unsigned char)code[p])) ++p;
+        size_t digit_len = p - digit_start;
+
+        // For CONCAT we need exactly 2 digit characters (e.g. "44", "11", "41").
+        // For all others we accept 1 or 2 digits (e.g. "4", "8", "16").
+        bool ok_digits = (e_kind == 0) ? (digit_len == 2)
+                                       : (digit_len == 1 || digit_len == 2);
+        if (!ok_digits || p >= code.size() || code[p] != '(') {
+            out.append(code, pos, earliest - pos + 1);
+            pos = earliest + 1;
+            continue;
+        }
+
+        // Parse the digits.
+        int d1 = code[digit_start] - '0';
+        int d2 = (digit_len == 2) ? (code[digit_start + 1] - '0') : 0;
+
+        // Extract the two call arguments.
+        std::string arg1, arg2;
+        size_t end_pos = 0;
+        if (!split_call_args(code, p, arg1, arg2, end_pos)) {
+            out.append(code, pos, earliest - pos + 1);
+            pos = earliest + 1;
+            continue;
+        }
+
+        // Emit everything before this token.
+        out.append(code, pos, earliest - pos);
+
+        char buf[512];
+        switch (e_kind) {
+        case 0: {
+            // CONCAT<A><B>(hi, lo)
+            // d1 = high bytes, d2 = low bytes
+            int hbytes = d1, lbytes = d2;
+            int shift   = lbytes * 8;
+            if (shift == 0) {
+                // Degenerate (both zero?): just cast high.
+                snprintf(buf, sizeof(buf), "(%s)(%s)",
+                         sint_acc_ctype(hbytes + lbytes), arg1.c_str());
+            } else {
+                snprintf(buf, sizeof(buf),
+                         "((%s)(%s) << %d | (%s)(%s))",
+                         sint_acc_ctype(hbytes + lbytes), arg1.c_str(),
+                         shift,
+                         uint_ctype(lbytes), arg2.c_str());
+            }
+            out += buf;
+            break;
+        }
+        case 1: {
+            // CARRY<N>(x, y)  →  ((uN)(x) + (uN)(y) < (uN)(x))
+            int nbytes = (digit_len == 2) ? (d1 * 10 + d2) : d1;
+            const char* ut = uint_ctype(nbytes);
+            snprintf(buf, sizeof(buf),
+                     "((%s)(%s) + (%s)(%s) < (%s)(%s))",
+                     ut, arg1.c_str(), ut, arg2.c_str(), ut, arg1.c_str());
+            out += buf;
+            break;
+        }
+        case 2: {
+            // SCARRY<N>(x, y)  →  __OFADD__(x, y)
+            need_ofadd = true;
+            snprintf(buf, sizeof(buf), "__OFADD__(%s, %s)",
+                     arg1.c_str(), arg2.c_str());
+            out += buf;
+            break;
+        }
+        case 3: {
+            // SBORROW<N>(x, y)  →  __OFSUB__(x, y)
+            need_ofsub = true;
+            snprintf(buf, sizeof(buf), "__OFSUB__(%s, %s)",
+                     arg1.c_str(), arg2.c_str());
+            out += buf;
+            break;
+        }
+        case 4: {
+            // SUB<N>(x, y)  →  (x - y)
+            snprintf(buf, sizeof(buf), "(%s - %s)", arg1.c_str(), arg2.c_str());
+            out += buf;
+            break;
+        }
+        default:
+            out.append(code, earliest, e_klen + digit_len);
+            break;
+        }
+        pos = end_pos;
+    }
+
+    // Prepend macro definitions for any IDA-style helper used above.
+    if (need_ofadd || need_ofsub) {
+        std::string hdr;
+        hdr += "// Overflow helpers (Ghidra SCARRY/SBORROW pseudo-ops):\n";
+        if (need_ofadd)
+            hdr += "// #define __OFADD__(x,y)  ((int)(((~(x)^(y))&((x)^((x)+(y))))>>31))  /* signed add overflow */\n";
+        if (need_ofsub)
+            hdr += "// #define __OFSUB__(x,y)  ((int)((((x)^(y))&((x)^((x)-(y))))>>31))   /* signed sub overflow */\n";
+        out = hdr + out;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // U3. Generic variable renaming
 //
 // After all other passes have run, variables still carrying Ghidra-generated
@@ -1815,7 +2049,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V19\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V20\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -1847,6 +2081,15 @@ std::string jni_annotate(const std::string& func_name,
     // xunknown1/2/4/8 → uint8_t/uint16_t/uint32_t/uint64_t.
     // Must run before other passes so they see real C type tokens.
     result = resolve_xunknown_types(result);
+
+    // ---- U0c. Resolve Ghidra arithmetic pseudo-ops -------------------------
+    // CONCAT<A><B>(hi,lo) → bit-shift expression.
+    // CARRY<N>(x,y)       → unsigned add-carry inline expression.
+    // SCARRY<N>(x,y)      → __OFADD__(x,y)  (signed add overflow).
+    // SBORROW<N>(x,y)     → __OFSUB__(x,y)  (signed sub overflow).
+    // SUB<N>(x,y)         → (x - y).
+    // Macro definitions are prepended as comments when OFADD/OFSUB are used.
+    result = resolve_ghidra_pseudoops(result);
 
     // ---- U1. Strip ARM64 stack canary boilerplate --------------------------
     // Removes: tpidr_el0 TLS load, canary value load, and the trailing
