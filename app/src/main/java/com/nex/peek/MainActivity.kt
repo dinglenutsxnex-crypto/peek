@@ -158,12 +158,21 @@ class MainActivity : AppCompatActivity() {
         val crashFile = File(filesDir, PeekApplication.CRASH_FILE_NAME)
         if (!crashFile.exists()) return
 
-        val reason = try {
+        var reason = try {
             crashFile.readText().trim()
         } catch (e: Exception) {
             "Could not read crash file: ${e.message}"
         }
         crashFile.delete()
+
+        val funcFile = File(filesDir, PeekApplication.DOWNLOAD_FUNC_FILE)
+        if (funcFile.exists()) {
+            val funcName = try { funcFile.readText().trim() } catch (_: Exception) { "" }
+            funcFile.delete()
+            if (funcName.isNotEmpty()) {
+                reason += "\n\nOccurred while downloading function:\n$funcName"
+            }
+        }
 
         if (reason.isEmpty()) return
 

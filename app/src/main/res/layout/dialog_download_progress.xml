@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="300dp"
+    android:layout_height="wrap_content"
+    android:orientation="vertical"
+    android:background="@color/bg_elevated"
+    android:padding="24dp">
+
+    <TextView
+        android:id="@+id/tvDlTitle"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:textColor="@color/text_primary"
+        android:textSize="13sp"
+        android:fontFamily="monospace"
+        android:letterSpacing="0.05"
+        android:text="Downloading…" />
+
+    <ProgressBar
+        android:id="@+id/dlProgressBar"
+        style="?android:attr/progressBarStyleHorizontal"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:max="100"
+        android:progress="0" />
+
+    <TextView
+        android:id="@+id/tvDlCount"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="12sp"
+        android:fontFamily="monospace"
+        android:gravity="center"
+        android:text="0 / 0 functions" />
+
+    <TextView
+        android:id="@+id/tvDlFunc"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:textColor="@color/text_secondary"
+        android:textSize="10sp"
+        android:fontFamily="monospace"
+        android:maxLines="1"
+        android:ellipsize="middle"
+        android:gravity="center"
+        android:text="" />
+
+</LinearLayout>

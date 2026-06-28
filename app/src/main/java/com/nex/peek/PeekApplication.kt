@@ -24,7 +24,8 @@ import java.io.StringWriter
 class PeekApplication : Application() {
 
     companion object {
-        const val CRASH_FILE_NAME = "last_crash.txt"
+        const val CRASH_FILE_NAME       = "last_crash.txt"
+        const val DOWNLOAD_FUNC_FILE    = "download_current_func.txt"
     }
 
     override fun onCreate() {

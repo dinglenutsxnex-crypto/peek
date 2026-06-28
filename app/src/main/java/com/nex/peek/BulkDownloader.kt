@@ -22,7 +22,7 @@ object BulkDownloader {
         PSEUDOCODE("pseudocode", "c")
     }
 
-    data class Progress(val done: Int, val total: Int)
+    data class Progress(val done: Int, val total: Int, val currentName: String = "")
 
     /**
      * Fetches all function data for the given type, builds a zip with one file
@@ -58,13 +58,14 @@ object BulkDownloader {
         val bos = ByteArrayOutputStream()
         ZipOutputStream(bos).use { zos ->
             functions.forEachIndexed { index, fn ->
+                onProgress(Progress(index, functions.size, fn.displayName))
                 val content = generateContent(handle, fn, type)
                 val entryName =
                     "${sanitize(fn.displayName)}_${fn.address.toString(16).uppercase()}.${type.ext}"
                 zos.putNextEntry(ZipEntry(entryName))
                 zos.write(content.toByteArray(Charsets.UTF_8))
                 zos.closeEntry()
-                onProgress(Progress(index + 1, functions.size))
+                onProgress(Progress(index + 1, functions.size, fn.displayName))
             }
         }
         return bos.toByteArray()

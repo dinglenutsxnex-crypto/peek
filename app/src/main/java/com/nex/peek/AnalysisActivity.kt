@@ -4,6 +4,7 @@ import android.Manifest
 import android.animation.Animator
 import android.animation.AnimatorListenerAdapter
 import android.annotation.SuppressLint
+import android.app.Dialog
 import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
@@ -16,7 +17,11 @@ import android.view.Menu
 import android.view.MenuItem
 import android.view.MotionEvent
 import android.view.View
+import android.view.WindowManager
+import android.widget.ProgressBar
+import android.widget.TextView
 import android.widget.Toast
+import java.io.File
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
@@ -219,12 +224,10 @@ class AnalysisActivity : AppCompatActivity() {
         }
         val binaryName = intent.getStringExtra(EXTRA_NAME) ?: "binary"
         val functions  = allFunctions.toList()
+        val funcFile   = File(filesDir, PeekApplication.DOWNLOAD_FUNC_FILE)
 
-        Toast.makeText(
-            this,
-            "Preparing ${type.label} for ${functions.size} functions…",
-            Toast.LENGTH_SHORT
-        ).show()
+        val dialog = buildProgressDialog(type.label, functions.size)
+        dialog.show()
 
         lifecycleScope.launch {
             val result = runCatching {
@@ -235,10 +238,17 @@ class AnalysisActivity : AppCompatActivity() {
                         functions  = functions,
                         type       = type,
                         binaryName = binaryName,
-                        onProgress = { /* progress available if needed */ }
+                        onProgress = { p ->
+                            if (p.currentName.isNotEmpty()) {
+                                try { funcFile.writeText(p.currentName) } catch (_: Exception) {}
+                            }
+                            runOnUiThread { updateProgressDialog(dialog, p) }
+                        }
                     )
                 }
             }
+            try { funcFile.delete() } catch (_: Exception) {}
+            if (dialog.isShowing) dialog.dismiss()
             result.onSuccess { filename ->
                 Toast.makeText(
                     this@AnalysisActivity,
@@ -253,6 +263,39 @@ class AnalysisActivity : AppCompatActivity() {
                     Toast.LENGTH_LONG
                 ).show()
             }
+        }
+    }
+
+    private fun buildProgressDialog(typeLabel: String, total: Int): Dialog {
+        val view = layoutInflater.inflate(R.layout.dialog_download_progress, null)
+        view.findViewById<TextView>(R.id.tvDlTitle).text =
+            "Downloading $typeLabel…"
+        view.findViewById<ProgressBar>(R.id.dlProgressBar).max = total
+        view.findViewById<TextView>(R.id.tvDlCount).text = "0 / $total functions"
+
+        val dialog = Dialog(this)
+        dialog.setCancelable(false)
+        dialog.setContentView(view)
+        dialog.window?.apply {
+            setBackgroundDrawableResource(android.R.color.transparent)
+            setDimAmount(0.7f)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
+                val attrs = attributes
+                attrs.blurBehindRadius = 25
+                attributes = attrs
+            }
+        }
+        return dialog
+    }
+
+    private fun updateProgressDialog(dialog: Dialog, p: BulkDownloader.Progress) {
+        if (!dialog.isShowing) return
+        dialog.findViewById<ProgressBar>(R.id.dlProgressBar)?.progress = p.done
+        dialog.findViewById<TextView>(R.id.tvDlCount)?.text =
+            "${p.done} / ${p.total} functions"
+        if (p.currentName.isNotEmpty()) {
+            dialog.findViewById<TextView>(R.id.tvDlFunc)?.text = p.currentName
         }
     }
 
