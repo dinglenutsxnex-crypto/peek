@@ -71,34 +71,7 @@ class PseudocodeFragment : Fragment() {
                 }
                 b.tvEmpty.visibility = View.VISIBLE
             } else {
-                // --- TEMPORARY BUILD-FINGERPRINT + DIAGNOSTIC MARKER ---
-                // peek_jni.cpp now prepends a diagnostic block followed by an
-                // unambiguous "===PEEK_BODY_START===" delimiter, then the
-                // actual pseudocode the UI should display. The block also
-                // embeds a full snapshot of the bridge's raw output BEFORE
-                // jni_annotate runs, so it can be compared directly against
-                // the final result to isolate whether jni_annotate itself
-                // is what strips the if/else bodies.
-                val delimiter = "===PEEK_BODY_START===\n"
-                val delimIdx = code.indexOf(delimiter)
-                var displayCode = code
-                if (delimIdx >= 0) {
-                    val diagBlock = code.substring(0, delimIdx)
-                    displayCode = code.substring(delimIdx + delimiter.length)
-
-                    androidx.appcompat.app.AlertDialog.Builder(requireContext())
-                        .setTitle("Fix diagnostic")
-                        .setMessage(diagBlock)
-                        .setPositiveButton("OK", null)
-                        .show()
-                } else {
-                    android.widget.Toast.makeText(
-                        requireContext(),
-                        "No fix marker found — old build or fix not applied",
-                        android.widget.Toast.LENGTH_LONG
-                    ).show()
-                }
-                b.tvPseudocode.text = PseudocodeHighlighter.highlight(displayCode)
+                b.tvPseudocode.text = PseudocodeHighlighter.highlight(code)
                 b.btnCopy.visibility = View.VISIBLE
             }
         }

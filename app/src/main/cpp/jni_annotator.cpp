@@ -1478,8 +1478,18 @@ static std::string remove_writeonly_vars(const std::string& code) {
             if (le==std::string::npos) le=src.size();
             std::string ln(src, ls, le-ls);
             // Pure declaration — not a read.
-            if (ln.rfind(';')!=std::string::npos && ln.find('=')==std::string::npos) {
-                pos=le; continue;
+            // Guard: exclude `return ...;` which also has ';' and no '='.
+            {
+                size_t tp = 0;
+                while (tp < ln.size() && (ln[tp]==' '||ln[tp]=='\t')) ++tp;
+                bool is_return = (tp + 6 <= ln.size() &&
+                                  ln.compare(tp, 6, "return") == 0 &&
+                                  (tp + 6 >= ln.size() || !is_id(ln[tp + 6])));
+                if (!is_return &&
+                    ln.rfind(';')!=std::string::npos &&
+                    ln.find('=')==std::string::npos) {
+                    pos=le; continue;
+                }
             }
             // Standalone write — read only if var also appears on RHS.
             if (is_stmt_write(ln, var)) {
