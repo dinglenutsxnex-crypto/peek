@@ -37,6 +37,8 @@
 #include <memory>
 #include <mutex>
 #include <set>
+#include <setjmp.h>
+#include <signal.h>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -45,6 +47,41 @@
 #define TAG "PeekJNI"
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO,  TAG, __VA_ARGS__)
 #define LOGE(...) __android_log_print(ANDROID_LOG_ERROR, TAG, __VA_ARGS__)
+
+// ---------------------------------------------------------------------------
+// Decompiler SIGSEGV guard
+//
+// Ghidra's decompiler library can produce a SIGSEGV on functions containing
+// instructions whose P-code tables have incomplete/null sub-constructors
+// (e.g. ARMv8.1 LSE atomics, certain extended-register encodings). Because
+// the crash happens inside a pre-compiled native library, it cannot be caught
+// by C++ try/catch — only a signal handler can intercept it.
+//
+// Strategy: before each peek_decompile_bytes_v2 call, temporarily replace
+// the existing SIGSEGV handler with a guard that calls siglongjmp back to
+// the established recovery point.  On recovery we log the incident, skip
+// the pseudocode for that function, and restore the original handler so the
+// crash-reporting path (crash_handler.cpp) remains intact for genuine crashes
+// that happen outside of decompilation.
+//
+// Thread-safety: both fields are thread_local — decompilation jobs run on
+// the IO thread, but if the app ever parallelises them each thread has its
+// own independent recovery state.
+// ---------------------------------------------------------------------------
+
+static thread_local sigjmp_buf  g_decomp_jmp;
+static thread_local volatile bool g_decomp_active = false;
+
+static void decomp_segv_guard(int sig, siginfo_t* /*info*/, void* /*ctx*/) {
+    if (g_decomp_active) {
+        g_decomp_active = false;
+        siglongjmp(g_decomp_jmp, 1);
+    }
+    // Not in a guarded decompile call — re-raise so the real crash handler
+    // (crash_handler.cpp) takes over and writes the diagnostic file.
+    signal(sig, SIG_DFL);
+    raise(sig);
+}
 
 // ---------------------------------------------------------------------------
 // Analysis context
@@ -1647,12 +1684,48 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         c_sigs.push_back(cs);
     }
 
+    // ------------------------------------------------------------------
+    // Guard the decompile call against SIGSEGV from Ghidra's internals.
+    // ------------------------------------------------------------------
+    struct sigaction guard_sa, old_sa_segv, old_sa_bus;
+    memset(&guard_sa, 0, sizeof(guard_sa));
+    guard_sa.sa_sigaction = decomp_segv_guard;
+    guard_sa.sa_flags     = SA_SIGINFO;
+    sigemptyset(&guard_sa.sa_mask);
+    sigaction(SIGSEGV, &guard_sa, &old_sa_segv);
+    sigaction(SIGBUS,  &guard_sa, &old_sa_bus);
+
     PeekInferredSig inferred = {};
-    char* result_cstr = peek_decompile_bytes_v2(
-        data, (size_t)code_len,
-        fn.name.c_str(), tmp_path.c_str(), (uint64_t)fn.address,
-        c_sigs.empty() ? nullptr : c_sigs.data(), c_sigs.size(),
-        &inferred);
+    char* result_cstr = nullptr;
+    bool decomp_crashed = false;
+
+    g_decomp_active = true;
+    if (sigsetjmp(g_decomp_jmp, /*savemask=*/1) == 0) {
+        result_cstr = peek_decompile_bytes_v2(
+            data, (size_t)code_len,
+            fn.name.c_str(), tmp_path.c_str(), (uint64_t)fn.address,
+            c_sigs.empty() ? nullptr : c_sigs.data(), c_sigs.size(),
+            &inferred);
+        g_decomp_active = false;
+    } else {
+        // Recovered from SIGSEGV/SIGBUS inside Ghidra — g_decomp_active
+        // already cleared by the guard handler before siglongjmp.
+        decomp_crashed = true;
+        LOGE("Decompiler SIGSEGV recovered for %s — skipping pseudocode",
+             fn.name.c_str());
+    }
+
+    // Restore the original handlers (crash_handler.cpp) unconditionally.
+    sigaction(SIGSEGV, &old_sa_segv, nullptr);
+    sigaction(SIGBUS,  &old_sa_bus,  nullptr);
+
+    if (decomp_crashed) {
+        ctx->last_error = std::string("decompiler fault (SIGSEGV) on ") + fn.name;
+        return env->NewStringUTF(
+            "// Pseudocode unavailable: decompiler fault on this function.\n"
+            "// The function may contain instructions not supported by the\n"
+            "// decompiler (e.g. ARMv8.1 LSE atomics or unusual encodings).\n");
+    }
 
     if (!result_cstr) {
         const char* bridge_err = peek_decompile_get_last_error();
