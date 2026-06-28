@@ -840,6 +840,239 @@ static const StdlibProto kStdlibProtos[] = {
     { "AAssetManager_fromJava", "ptr", 2, "ptr,ptr"                },
     { "AAsset_read",     "int",  3, "ptr,void*,size_t"             },
     { "AAsset_close",    "void", 1, "ptr"                          },
+    // --- C stdlib extras ---
+    { "atoi",          "int",    1, "char*"                        },
+    { "atol",          "long",   1, "char*"                        },
+    { "atoll",         "long",   1, "char*"                        },
+    { "atof",          "double", 1, "char*"                        },
+    { "strdup",        "char*",  1, "char*"                        },
+    { "strndup",       "char*",  2, "char*,size_t"                 },
+    { "strsep",        "char*",  2, "ptr,char*"                    },
+    { "strpbrk",       "char*",  2, "char*,char*"                  },
+    { "strspn",        "size_t", 2, "char*,char*"                  },
+    { "strcspn",       "size_t", 2, "char*,char*"                  },
+    { "strtok_r",      "char*",  3, "char*,char*,ptr"              },
+    { "strerror",      "char*",  1, "int"                          },
+    { "perror",        "void",   1, "char*"                        },
+    { "qsort",         "void",   4, "void*,size_t,size_t,ptr"      },
+    { "bsearch",       "void*",  5, "void*,void*,size_t,size_t,ptr"},
+    { "rand",          "int",    0, ""                             },
+    { "rand_r",        "int",    1, "ptr"                          },
+    { "srand",         "void",   1, "uint"                         },
+    { "random",        "long",   0, ""                             },
+    { "srandom",       "void",   1, "uint"                         },
+    { "arc4random",    "uint",   0, ""                             },
+    { "arc4random_uniform","uint",1,"uint"                         },
+    // --- ctype ---
+    { "isalpha",       "int",    1, "int"                          },
+    { "isdigit",       "int",    1, "int"                          },
+    { "isalnum",       "int",    1, "int"                          },
+    { "isspace",       "int",    1, "int"                          },
+    { "isprint",       "int",    1, "int"                          },
+    { "ispunct",       "int",    1, "int"                          },
+    { "iscntrl",       "int",    1, "int"                          },
+    { "isupper",       "int",    1, "int"                          },
+    { "islower",       "int",    1, "int"                          },
+    { "toupper",       "int",    1, "int"                          },
+    { "tolower",       "int",    1, "int"                          },
+    // --- time ---
+    { "time",          "long",   1, "ptr"                          },
+    { "clock",         "long",   0, ""                             },
+    { "clock_gettime", "int",    2, "int,ptr"                      },
+    { "gettimeofday",  "int",    2, "ptr,ptr"                      },
+    { "nanosleep",     "int",    2, "ptr,ptr"                      },
+    { "usleep",        "int",    1, "uint"                         },
+    { "sleep",         "uint",   1, "uint"                         },
+    { "localtime",     "ptr",    1, "ptr"                          },
+    { "gmtime",        "ptr",    1, "ptr"                          },
+    { "mktime",        "long",   1, "ptr"                          },
+    { "strftime",      "size_t", 4, "char*,size_t,char*,ptr"       },
+    // --- file / dir ---
+    { "stat",          "int",    2, "char*,ptr"                    },
+    { "fstat",         "int",    2, "int,ptr"                      },
+    { "lstat",         "int",    2, "char*,ptr"                    },
+    { "access",        "int",    2, "char*,int"                    },
+    { "getcwd",        "char*",  2, "char*,size_t"                 },
+    { "chdir",         "int",    1, "char*"                        },
+    { "mkdir",         "int",    2, "char*,uint"                   },
+    { "rmdir",         "int",    1, "char*"                        },
+    { "unlink",        "int",    1, "char*"                        },
+    { "rename",        "int",    2, "char*,char*"                  },
+    { "opendir",       "ptr",    1, "char*"                        },
+    { "readdir",       "ptr",    1, "ptr"                          },
+    { "closedir",      "int",    1, "ptr"                          },
+    { "realpath",      "char*",  2, "char*,char*"                  },
+    // --- memory map / protection ---
+    { "mprotect",      "int",    3, "void*,size_t,int"             },
+    { "mlock",         "int",    2, "void*,size_t"                 },
+    { "munlock",       "int",    2, "void*,size_t"                 },
+    { "msync",         "int",    3, "void*,size_t,int"             },
+    { "mremap",        "void*",  5, "void*,size_t,size_t,int,void*"},
+    { "mincore",       "int",    3, "void*,size_t,ptr"             },
+    { "madvise",       "int",    3, "void*,size_t,int"             },
+    // --- dynamic linker ---
+    { "dlopen",        "void*",  2, "char*,int"                    },
+    { "dlclose",       "int",    1, "void*"                        },
+    { "dlsym",         "void*",  2, "void*,char*"                  },
+    { "dladdr",        "int",    2, "void*,ptr"                    },
+    { "dlerror",       "char*",  0, ""                             },
+    // --- networking ---
+    { "socket",        "int",    3, "int,int,int"                  },
+    { "bind",          "int",    3, "int,ptr,uint"                 },
+    { "connect",       "int",    3, "int,ptr,uint"                 },
+    { "listen",        "int",    2, "int,int"                      },
+    { "accept",        "int",    3, "int,ptr,ptr"                  },
+    { "send",          "long",   4, "int,void*,size_t,int"         },
+    { "recv",          "long",   4, "int,void*,size_t,int"         },
+    { "sendto",        "long",   6, "int,void*,size_t,int,ptr,uint"},
+    { "recvfrom",      "long",   6, "int,void*,size_t,int,ptr,ptr" },
+    { "setsockopt",    "int",    5, "int,int,int,void*,uint"       },
+    { "getsockopt",    "int",    5, "int,int,int,void*,ptr"        },
+    { "shutdown",      "int",    2, "int,int"                      },
+    { "getsockname",   "int",    3, "int,ptr,ptr"                  },
+    { "getpeername",   "int",    3, "int,ptr,ptr"                  },
+    { "htons",         "uint",   1, "uint"                         },
+    { "htonl",         "uint",   1, "uint"                         },
+    { "ntohs",         "uint",   1, "uint"                         },
+    { "ntohl",         "uint",   1, "uint"                         },
+    { "inet_addr",     "uint",   1, "char*"                        },
+    { "inet_ntoa",     "char*",  1, "uint"                         },
+    { "getaddrinfo",   "int",    4, "char*,char*,ptr,ptr"          },
+    { "freeaddrinfo",  "void",   1, "ptr"                          },
+    // --- signals ---
+    { "signal",        "ptr",    2, "int,ptr"                      },
+    { "sigaction",     "int",    3, "int,ptr,ptr"                  },
+    { "raise",         "int",    1, "int"                          },
+    { "kill",          "int",    2, "int,int"                      },
+    // --- setjmp / longjmp ---
+    { "setjmp",        "int",    1, "ptr"                          },
+    { "longjmp",       "void",   2, "ptr,int"                      },
+    { "sigsetjmp",     "int",    2, "ptr,int"                      },
+    { "siglongjmp",    "void",   2, "ptr,int"                      },
+    // --- ioctl / pipe ---
+    { "ioctl",         "int",    3, "int,ulong,ptr"                },
+    { "pipe",          "int",    1, "ptr"                          },
+    { "pipe2",         "int",    2, "ptr,int"                      },
+    { "dup",           "int",    1, "int"                          },
+    { "dup2",          "int",    2, "int,int"                      },
+    { "fcntl",         "int",    3, "int,int,int"                  },
+    { "select",        "int",    5, "int,ptr,ptr,ptr,ptr"          },
+    { "poll",          "int",    3, "ptr,uint,int"                 },
+    { "epoll_create",  "int",    1, "int"                          },
+    { "epoll_create1", "int",    1, "int"                          },
+    { "epoll_ctl",     "int",    4, "int,int,int,ptr"              },
+    { "epoll_wait",    "int",    4, "int,ptr,int,int"              },
+    // --- math (float variants) ---
+    { "sinf",          "float",  1, "float"                        },
+    { "cosf",          "float",  1, "float"                        },
+    { "tanf",          "float",  1, "float"                        },
+    { "asinf",         "float",  1, "float"                        },
+    { "acosf",         "float",  1, "float"                        },
+    { "atanf",         "float",  1, "float"                        },
+    { "atan2f",        "float",  2, "float,float"                  },
+    { "sqrtf",         "float",  1, "float"                        },
+    { "powf",          "float",  2, "float,float"                  },
+    { "floorf",        "float",  1, "float"                        },
+    { "ceilf",         "float",  1, "float"                        },
+    { "roundf",        "float",  1, "float"                        },
+    { "truncf",        "float",  1, "float"                        },
+    { "fabsf",         "float",  1, "float"                        },
+    { "expf",          "float",  1, "float"                        },
+    { "exp2f",         "float",  1, "float"                        },
+    { "logf",          "float",  1, "float"                        },
+    { "log2f",         "float",  1, "float"                        },
+    { "log10f",        "float",  1, "float"                        },
+    { "fmodf",         "float",  2, "float,float"                  },
+    { "fminf",         "float",  2, "float,float"                  },
+    { "fmaxf",         "float",  2, "float,float"                  },
+    { "hypotf",        "float",  2, "float,float"                  },
+    { "ldexpf",        "float",  2, "float,int"                    },
+    { "frexpf",        "float",  2, "float,ptr"                    },
+    { "modff",         "float",  2, "float,ptr"                    },
+    // --- math (double extras) ---
+    { "atan",          "double", 1, "double"                       },
+    { "atan2",         "double", 2, "double,double"                },
+    { "asin",          "double", 1, "double"                       },
+    { "acos",          "double", 1, "double"                       },
+    { "tan",           "double", 1, "double"                       },
+    { "exp",           "double", 1, "double"                       },
+    { "exp2",          "double", 1, "double"                       },
+    { "round",         "double", 1, "double"                       },
+    { "trunc",         "double", 1, "double"                       },
+    { "fmin",          "double", 2, "double,double"                },
+    { "fmax",          "double", 2, "double,double"                },
+    { "fmod",          "double", 2, "double,double"                },
+    { "hypot",         "double", 2, "double,double"                },
+    { "ldexp",         "double", 2, "double,int"                   },
+    { "frexp",         "double", 2, "double,ptr"                   },
+    { "modf",          "double", 2, "double,ptr"                   },
+    { "cbrt",          "double", 1, "double"                       },
+    { "cbrtf",         "float",  1, "float"                        },
+    { "logb",          "double", 1, "double"                       },
+    { "logbf",         "float",  1, "float"                        },
+    // --- pthread extras ---
+    { "pthread_cond_init",      "int",  2, "ptr,ptr"               },
+    { "pthread_cond_destroy",   "int",  1, "ptr"                   },
+    { "pthread_cond_wait",      "int",  2, "ptr,ptr"               },
+    { "pthread_cond_signal",    "int",  1, "ptr"                   },
+    { "pthread_cond_broadcast", "int",  1, "ptr"                   },
+    { "pthread_cond_timedwait", "int",  3, "ptr,ptr,ptr"           },
+    { "pthread_rwlock_init",    "int",  2, "ptr,ptr"               },
+    { "pthread_rwlock_destroy", "int",  1, "ptr"                   },
+    { "pthread_rwlock_rdlock",  "int",  1, "ptr"                   },
+    { "pthread_rwlock_wrlock",  "int",  1, "ptr"                   },
+    { "pthread_rwlock_unlock",  "int",  1, "ptr"                   },
+    { "pthread_rwlock_tryrdlock","int", 1, "ptr"                   },
+    { "pthread_rwlock_trywrlock","int", 1, "ptr"                   },
+    { "pthread_key_create",     "int",  2, "ptr,ptr"               },
+    { "pthread_key_delete",     "int",  1, "ulong"                 },
+    { "pthread_getspecific",    "void*",1, "ulong"                 },
+    { "pthread_setspecific",    "int",  2, "ulong,void*"           },
+    { "pthread_once",           "int",  2, "ptr,ptr"               },
+    { "pthread_self",           "ulong",0, ""                      },
+    { "pthread_detach",         "int",  1, "ulong"                 },
+    { "pthread_exit",           "void", 1, "void*"                 },
+    { "pthread_cancel",         "int",  1, "ulong"                 },
+    { "pthread_attr_init",      "int",  1, "ptr"                   },
+    { "pthread_attr_destroy",   "int",  1, "ptr"                   },
+    { "pthread_attr_setstacksize","int",2, "ptr,size_t"            },
+    { "pthread_attr_getstacksize","int",2, "ptr,ptr"               },
+    { "pthread_attr_setdetachstate","int",2,"ptr,int"              },
+    { "pthread_mutex_trylock",  "int",  1, "ptr"                   },
+    { "pthread_mutex_timedlock","int",  2, "ptr,ptr"               },
+    // --- semaphore ---
+    { "sem_init",      "int",    3, "ptr,int,uint"                 },
+    { "sem_wait",      "int",    1, "ptr"                          },
+    { "sem_trywait",   "int",    1, "ptr"                          },
+    { "sem_timedwait", "int",    2, "ptr,ptr"                      },
+    { "sem_post",      "int",    1, "ptr"                          },
+    { "sem_destroy",   "int",    1, "ptr"                          },
+    // --- C++ runtime extras ---
+    { "__cxa_pure_virtual",     "void", 0, ""                      }, // pure virtual call guard
+    { "__cxa_atexit",           "int",  3, "ptr,void*,void*"       }, // register destructor
+    { "__cxa_finalize",         "void", 1, "void*"                 }, // run atexit handlers
+    { "__cxa_rethrow",          "void", 0, ""                      }, // rethrow current exception
+    { "__cxa_demangle",         "char*",4, "char*,char*,ptr,ptr"   }, // demangle symbol
+    { "__cxa_current_exception_type","ptr",0,""                    }, // get current exception type
+    { "__gxx_personality_v0",   "int",  5, "int,int,long,ptr,ptr"  }, // Itanium EH personality
+    { "_Unwind_Resume",         "void", 1, "ptr"                   }, // resume stack unwinding
+    { "_Unwind_RaiseException", "int",  1, "ptr"                   }, // initiate unwinding
+    { "__stack_chk_fail",       "void", 0, ""                      }, // stack smash detected
+    { "__stack_chk_guard",      "ptr",  0, ""                      }, // stack canary value
+    { "_ZSt9terminatev",        "void", 0, ""                      }, // std::terminate()
+    { "_ZSt17__throw_bad_allocv","void",0, ""                      }, // std::__throw_bad_alloc()
+    { "_ZSt20__throw_length_errorPKc","void",1,"char*"             }, // __throw_length_error
+    { "_ZSt24__throw_out_of_rangePKc","void",1,"char*"             }, // __throw_out_of_range
+    { "_ZSt21__throw_runtime_errorPKc","void",1,"char*"            }, // __throw_runtime_error
+    { "_ZSt20__throw_logic_errorPKc","void",1,"char*"              }, // __throw_logic_error
+    { "_ZSt19__throw_range_errorPKc","void",1,"char*"              }, // __throw_range_error
+    // operator new / delete extended variants
+    { "_ZnwmRKSt9nothrow_t",    "void*",2, "size_t,ptr"            }, // operator new(nothrow)
+    { "_ZnamRKSt9nothrow_t",    "void*",2, "size_t,ptr"            }, // operator new[](nothrow)
+    { "_ZdlPvRKSt9nothrow_t",   "void", 2, "void*,ptr"             }, // operator delete(nothrow)
+    { "_ZdaPvRKSt9nothrow_t",   "void", 2, "void*,ptr"             }, // operator delete[](nothrow)
+    { "_ZdaPv",                 "void", 1, "void*"                  }, // operator delete[](void*)
+    { "_ZdaPvm",                "void", 2, "void*,size_t"           }, // operator delete[](void*,size_t)
     // --- STL std::string (libstdc++ / libc++ ABI, AArch64) ---
     // Mangled names for the most common basic_string<char> methods.
     // These show up as func_0x... calls in stripped Unity/NDK binaries.
@@ -848,37 +1081,122 @@ static const StdlibProto kStdlibProtos[] = {
     { "_ZNSsC1ERKS_",        "void", 1, "ptr"                      }, // string(const string&)
     { "_ZNSsC1Ev",           "void", 0, ""                         }, // string()
     { "_ZNSsD1Ev",           "void", 0, ""                         }, // ~string()
+    { "_ZNSsD2Ev",           "void", 0, ""                         }, // ~string() base
     { "_ZNSsaSERKSs",        "ptr",  1, "ptr"                      }, // operator=(const string&)
     { "_ZNSsaSEPKc",         "ptr",  1, "char*"                    }, // operator=(const char*)
     { "_ZNSs6appendEPKc",    "ptr",  1, "char*"                    }, // append(const char*)
     { "_ZNSs6appendERKSs",   "ptr",  1, "ptr"                      }, // append(const string&)
     { "_ZNSs6appendEPKcm",   "ptr",  2, "char*,size_t"             }, // append(const char*, n)
+    { "_ZNSs6appendEmc",     "ptr",  2, "size_t,int"               }, // append(n, char)
     { "_ZNSs6assignEPKc",    "ptr",  1, "char*"                    }, // assign(const char*)
     { "_ZNSs6assignERKSs",   "ptr",  1, "ptr"                      }, // assign(const string&)
+    { "_ZNSs6assignEPKcm",   "ptr",  2, "char*,size_t"             }, // assign(const char*, n)
     { "_ZNSs4findEcm",       "size_t", 2, "int,size_t"             }, // find(char, pos)
     { "_ZNSs4findEPKcm",     "size_t", 2, "char*,size_t"           }, // find(const char*, pos)
+    { "_ZNSs5rfindEcm",      "size_t", 2, "int,size_t"             }, // rfind(char, pos)
+    { "_ZNSs5rfindEPKcm",    "size_t", 2, "char*,size_t"           }, // rfind(const char*, pos)
     { "_ZNSs6substrEmm",     "ptr",  2, "size_t,size_t"            }, // substr(pos, len)
     { "_ZNSs5eraseEmm",      "ptr",  2, "size_t,size_t"            }, // erase(pos, len)
     { "_ZNSs6insertEmPKc",   "ptr",  2, "size_t,char*"             }, // insert(pos, s)
     { "_ZNSs7replaceEmmPKc", "ptr",  3, "size_t,size_t,char*"      }, // replace
+    { "_ZNSs5clearEv",       "void", 0, ""                         }, // clear()
+    { "_ZNSs7reserveEm",     "void", 1, "size_t"                   }, // reserve(n)
+    { "_ZNSs6resizeEmc",     "void", 2, "size_t,int"               }, // resize(n,c)
+    { "_ZNSs9push_backEc",   "void", 1, "int"                      }, // push_back(char)
+    { "_ZNSs8pop_backEv",    "void", 0, ""                         }, // pop_back()
     { "_ZNKSs4sizeEv",       "size_t", 0, ""                       }, // size()
     { "_ZNKSs6lengthEv",     "size_t", 0, ""                       }, // length()
     { "_ZNKSs5emptyEv",      "bool", 0, ""                         }, // empty()
+    { "_ZNKSs8capacityEv",   "size_t", 0, ""                       }, // capacity()
     { "_ZNKSs5c_strEv",      "char*", 0, ""                        }, // c_str()
     { "_ZNKSs4dataEv",       "char*", 0, ""                        }, // data()
     { "_ZNKSseqERKSs",       "bool", 1, "ptr"                      }, // operator==(const string&)
     { "_ZNKSsltERKSs",       "bool", 1, "ptr"                      }, // operator<
+    { "_ZNKSs7compareERKSs", "int",  1, "ptr"                      }, // compare(const string&)
+    { "_ZNKSs7compareEPKc",  "int",  1, "char*"                    }, // compare(const char*)
     { "_ZStplIcSt11char_traitsIcESaIcEENSt7__cxx1112basic_stringIT_T0_T1_EERKS8_PKS5_",
                              "ptr",  2, "ptr,char*"                 }, // operator+(string, const char*)
-    // libc++ variants (clang NDK r23+)
+    // libstdc++ __cxx11 ABI (GCC 5+, NDK 22 gcc mode)
+    { "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEEC1EPKc",
+                             "void", 1, "char*"                     }, // string(const char*)
+    { "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEED1Ev",
+                             "void", 0, ""                          }, // ~string()
+    { "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE6appendEPKc",
+                             "ptr",  1, "char*"                     }, // append(const char*)
+    { "_ZNSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE9push_backEc",
+                             "void", 1, "int"                       }, // push_back(char)
+    { "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE4sizeEv",
+                             "size_t", 0, ""                        }, // size()
+    { "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE5c_strEv",
+                             "char*", 0, ""                         }, // c_str()
+    { "_ZNKSt7__cxx1112basic_stringIcSt11char_traitsIcESaIcEE5emptyEv",
+                             "bool", 0, ""                          }, // empty()
+    // libc++ variants (clang NDK r23+) — extended
     { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1EPKc",
-                             "void", 1, "char*"                     },
+                             "void", 1, "char*"                     }, // string(const char*)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1ERKS5_",
+                             "void", 1, "ptr"                       }, // string(const string&)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEC1Ev",
+                             "void", 0, ""                          }, // string()
     { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEED1Ev",
-                             "void", 0, ""                          },
+                             "void", 0, ""                          }, // ~string()
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSERKS5_",
+                             "ptr",  1, "ptr"                       }, // operator=(const string&)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEaSEPKc",
+                             "ptr",  1, "char*"                     }, // operator=(const char*)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKc",
+                             "ptr",  1, "char*"                     }, // append(const char*)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendERKS5_",
+                             "ptr",  1, "ptr"                       }, // append(const string&)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6appendEPKcm",
+                             "ptr",  2, "char*,size_t"              }, // append(const char*,n)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignEPKc",
+                             "ptr",  1, "char*"                     }, // assign(const char*)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6assignERKS5_",
+                             "ptr",  1, "ptr"                       }, // assign(const string&)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE9push_backEc",
+                             "void", 1, "int"                       }, // push_back(char)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5clearEv",
+                             "void", 0, ""                          }, // clear()
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7reserveEm",
+                             "void", 1, "size_t"                    }, // reserve(n)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6resizeEmc",
+                             "void", 2, "size_t,int"                }, // resize(n,c)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6insertEmPKc",
+                             "ptr",  2, "size_t,char*"              }, // insert(pos,s)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5eraseEmm",
+                             "ptr",  2, "size_t,size_t"             }, // erase(pos,len)
+    { "_ZNSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6substrEmm",
+                             "ptr",  2, "size_t,size_t"             }, // substr(pos,len)
     { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4sizeEv",
-                             "size_t", 0, ""                        },
+                             "size_t", 0, ""                        }, // size()
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE6lengthEv",
+                             "size_t", 0, ""                        }, // length()
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5emptyEv",
+                             "bool", 0, ""                          }, // empty()
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE8capacityEv",
+                             "size_t", 0, ""                        }, // capacity()
     { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5c_strEv",
-                             "char*", 0, ""                         },
+                             "char*", 0, ""                         }, // c_str()
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4dataEv",
+                             "char*", 0, ""                         }, // data()
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEcm",
+                             "size_t", 2, "int,size_t"              }, // find(char,pos)
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE4findEPKcm",
+                             "size_t", 2, "char*,size_t"            }, // find(const char*,pos)
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE5rfindEcm",
+                             "size_t", 2, "int,size_t"              }, // rfind(char,pos)
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareEPKc",
+                             "int",  1, "char*"                     }, // compare(const char*)
+    { "_ZNKSt3__112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEE7compareERKS5_",
+                             "int",  1, "ptr"                       }, // compare(const string&)
+    // libc++ std::string_view
+    { "_ZNKSt3__117basic_string_viewIcNS_11char_traitsIcEEE4sizeEv",
+                             "size_t", 0, ""                        }, // string_view::size()
+    { "_ZNKSt3__117basic_string_viewIcNS_11char_traitsIcEEE4dataEv",
+                             "char*", 0, ""                         }, // string_view::data()
+    { "_ZNKSt3__117basic_string_viewIcNS_11char_traitsIcEEE5emptyEv",
+                             "bool", 0, ""                          }, // string_view::empty()
     // --- STL std::vector (common operations) ---
     { "_ZNSt6vectorIiSaIiEEpbERKi",  "void", 1, "ptr"              }, // push_back(int)
     { "_ZNSt6vectorIfSaIfEEpbERKf",  "void", 1, "float"            }, // push_back(float)
@@ -887,6 +1205,25 @@ static const StdlibProto kStdlibProtos[] = {
     { "_ZNSt6vectorIiSaIiEE5clearEv", "void", 0, ""                }, // clear()
     { "_ZNSt6vectorIiSaIiEE6resizeEm","void", 1, "size_t"          }, // resize(n)
     { "_ZNSt6vectorIiSaIiEE7reserveEm","void",1, "size_t"          }, // reserve(n)
+    // libc++ std::vector<uint8_t>
+    { "_ZNSt3__16vectorIhNS_9allocatorIhEEE9push_backERKh",
+                             "void", 1, "ptr"                       }, // push_back(uint8_t)
+    { "_ZNSt3__16vectorIhNS_9allocatorIhEEE6resizeEm",
+                             "void", 1, "size_t"                    }, // resize(n)
+    { "_ZNSt3__16vectorIhNS_9allocatorIhEEE7reserveEm",
+                             "void", 1, "size_t"                    }, // reserve(n)
+    { "_ZNKSt3__16vectorIhNS_9allocatorIhEEE4sizeEv",
+                             "size_t", 0, ""                        }, // size()
+    { "_ZNSt3__16vectorIiNS_9allocatorIiEEE9push_backERKi",
+                             "void", 1, "ptr"                       }, // vector<int>::push_back
+    { "_ZNSt3__16vectorIfNS_9allocatorIfEEE9push_backERKf",
+                             "void", 1, "ptr"                       }, // vector<float>::push_back
+    { "_ZNSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEE9push_backERKS6_",
+                             "void", 1, "ptr"                       }, // vector<string>::push_back
+    // --- STL std::shared_ptr / unique_ptr ---
+    { "_ZNSt3__118make_shared_internalIPNS_6threadEJRS1_EEENSt3__16vectorINS_12basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEENS4_IS6_EEEENS_13__make_sharedIT_EERKT0_",
+                             "ptr",  1, "ptr"                       }, // ignore: too specific
+    { "__shared_ptr_emplace", "ptr",  2, "ptr,size_t"               }, // shared_ptr internals
     // --- STL std::unordered_map / std::map ---
     { "_ZNSt3__113unordered_mapINSt7__cxx1112basic_stringIcNS_11char_traitsIcEENS_9allocatorIcEEEEiNS_4hashIS7_EENS_8equal_toIS7_EENS4_INS_4pairIKS7_iEEEEED1Ev",
                              "void", 0, ""                          }, // ~unordered_map
@@ -894,6 +1231,65 @@ static const StdlibProto kStdlibProtos[] = {
     { "_ZnwmSt11align_val_t","void*", 2, "size_t,size_t"           }, // operator new(size_t, align_val_t)
     { "_ZdlPvSt11align_val_t","void", 2, "void*,size_t"            }, // operator delete(void*, align_val_t)
     { "_ZdlPvmSt11align_val_t","void",3, "void*,size_t,size_t"     }, // operator delete(void*, size_t, align_val_t)
+    // --- std::mutex / std::recursive_mutex ---
+    { "_ZNSt3__15mutexC1Ev",     "void", 0, ""                     }, // mutex()
+    { "_ZNSt3__15mutexD1Ev",     "void", 0, ""                     }, // ~mutex()
+    { "_ZNSt3__15mutex4lockEv",  "void", 0, ""                     }, // mutex::lock()
+    { "_ZNSt3__15mutex6unlockEv","void", 0, ""                      }, // mutex::unlock()
+    { "_ZNSt3__15mutex8try_lockEv","bool",0,""                      }, // mutex::try_lock()
+    { "_ZNSt3__116recursive_mutexC1Ev",  "void",0,""               }, // recursive_mutex()
+    { "_ZNSt3__116recursive_mutexD1Ev",  "void",0,""               }, // ~recursive_mutex()
+    { "_ZNSt3__116recursive_mutex4lockEv","void",0,""              }, // recursive_mutex::lock()
+    { "_ZNSt3__116recursive_mutex6unlockEv","void",0,""            }, // recursive_mutex::unlock()
+    // --- std::thread ---
+    { "_ZNSt3__16threadD1Ev",    "void", 0, ""                     }, // ~thread()
+    { "_ZNSt3__16thread4joinEv", "void", 0, ""                     }, // thread::join()
+    { "_ZNSt3__16thread6detachEv","void",0, ""                     }, // thread::detach()
+    { "_ZNKSt3__16thread15get_native_handleEv","ulong",0,""        }, // get_native_handle()
+    // --- std::exception ---
+    { "_ZNSt13exception_ptrD1Ev","void", 0, ""                     }, // ~exception_ptr()
+    { "_ZNSt13runtime_errorC1EPKc","void",1,"char*"                }, // runtime_error(const char*)
+    { "_ZNKSt13runtime_error4whatEv","char*",0,""                  }, // runtime_error::what()
+    { "_ZNSt12logic_errorC1EPKc","void", 1, "char*"                }, // logic_error(const char*)
+    { "_ZNKSt12logic_error4whatEv","char*",0,""                    }, // logic_error::what()
+    // --- Android NDK extras ---
+    { "__android_log_vprint",    "int",  3, "int,char*,ptr"         },
+    { "__android_log_assert",    "void", 3, "char*,char*,char*"     },
+    { "AAsset_getLength",        "long", 1, "ptr"                   },
+    { "AAsset_getLength64",      "long", 1, "ptr"                   },
+    { "AAsset_seek",             "long", 3, "ptr,long,int"          },
+    { "AAsset_seek64",           "long", 3, "ptr,long,int"          },
+    { "AAsset_getBuffer",        "ptr",  1, "ptr"                   },
+    { "AAsset_getRemainingLength","long",1, "ptr"                   },
+    { "AAssetManager_open",      "ptr",  3, "ptr,char*,int"         },
+    { "AAssetManager_openDir",   "ptr",  2, "ptr,char*"             },
+    { "AAssetDir_getNextFileName","char*",1,"ptr"                   },
+    { "AAssetDir_close",         "void", 1, "ptr"                   },
+    { "ALooper_prepare",         "ptr",  1, "int"                   },
+    { "ALooper_acquire",         "void", 1, "ptr"                   },
+    { "ALooper_release",         "void", 1, "ptr"                   },
+    { "ALooper_pollOnce",        "int",  4, "int,ptr,ptr,ptr"       },
+    { "ALooper_pollAll",         "int",  4, "int,ptr,ptr,ptr"       },
+    { "ALooper_addFd",           "int",  5, "ptr,int,int,int,ptr,ptr"},
+    { "ALooper_removeFd",        "int",  2, "ptr,int"               },
+    { "ALooper_wake",            "void", 1, "ptr"                   },
+    { "ALooper_forThread",       "ptr",  0, ""                      },
+    { "ANativeWindow_acquire",   "void", 1, "ptr"                   },
+    { "ANativeWindow_release",   "void", 1, "ptr"                   },
+    { "ANativeWindow_getWidth",  "int",  1, "ptr"                   },
+    { "ANativeWindow_getHeight", "int",  1, "ptr"                   },
+    { "ANativeWindow_getFormat", "int",  1, "ptr"                   },
+    { "ANativeWindow_setBuffersGeometry","int",4,"ptr,int,int,int"  },
+    { "ANativeWindow_lock",      "int",  3, "ptr,ptr,ptr"           },
+    { "ANativeWindow_unlockAndPost","int",1,"ptr"                   },
+    { "ANativeWindow_fromSurface","ptr", 2, "ptr,ptr"               },
+    { "AInputEvent_getType",     "int",  1, "ptr"                   },
+    { "AMotionEvent_getAction",  "int",  1, "ptr"                   },
+    { "AMotionEvent_getX",       "float",2,"ptr,size_t"             },
+    { "AMotionEvent_getY",       "float",2,"ptr,size_t"             },
+    { "AMotionEvent_getPointerCount","size_t",1,"ptr"               },
+    { "AKeyEvent_getKeyCode",    "int",  1, "ptr"                   },
+    { "AKeyEvent_getAction",     "int",  1, "ptr"                   },
     // --- il2cpp codegen helpers (Unity AArch64) ---
     // These appear in virtually every il2cpp-compiled Unity game as
     // func_0x... calls from managed method implementations.
@@ -1580,6 +1976,157 @@ static bool run_analysis(AnalysisContext& ctx) {
 }
 
 // ---------------------------------------------------------------------------
+// Ghidra auto-name token resolution
+//
+// Ghidra emits auto-generated names for things it cannot resolve:
+//   FUN_XXXXXXXX  — function at address XXXXXXXX (uppercase hex, 4-16 digits)
+//   DAT_XXXXXXXX  — data item at address XXXXXXXX
+//   PTR_FUN_XXXXXXXX_YYYYYYYY — pointer to function (e.g. vtable slots)
+//   LAB_XXXXXXXX  — code label
+//   EXTR_XXXXXXXX — external symbol placeholder
+//   thunk_FUN_XXXXXXXX — thunk wrapper around FUN_XXXXXXXX
+//
+// This pass runs BEFORE resolve_data_refs so that downstream passes see real
+// symbol names instead of raw FUN_/DAT_ placeholders.  Resolution strategy:
+//   FUN_ / PTR_FUN_ / thunk_FUN_:  look up VA in sym_map; fall back to
+//       sub_ADDR (IDA-style uppercase hex, no leading zeros).
+//   DAT_: try C-string at VA, then sym_map, then unk_ADDR.
+//   LAB_ / EXTR_: look up sym_map; keep raw token if not found.
+// ---------------------------------------------------------------------------
+
+static std::string resolve_ghidra_tokens(const std::string& code,
+                                          const ElfParseResult& elf) {
+    if (code.empty()) return code;
+
+    // Build a VA → name lookup (symbols first, then functions without override).
+    std::unordered_map<uint64_t, std::string> sym_map;
+    for (const auto& sym : elf.symbols) {
+        if (sym.address == 0 || sym.name.empty()) continue;
+        sym_map.emplace(sym.address, sym.name);
+    }
+    for (const auto& fn : elf.functions) {
+        if (fn.address == 0 || fn.name.empty()) continue;
+        sym_map.emplace(fn.address, fn.name);   // won't overwrite if sym already present
+    }
+
+    // Token descriptor: which prefix to scan for, and how to resolve it.
+    struct TokenDef {
+        const char* prefix;
+        size_t      plen;
+        bool        is_data;    // true → try C-string; false → function lookup
+        bool        drop_inner; // true → inner FUN_ within PTR_FUN_ already handled
+    };
+
+    // Order matters: longer prefixes must come before shorter ones that share a prefix.
+    static const TokenDef kTokens[] = {
+        {"thunk_FUN_", 10, false, false},
+        {"PTR_FUN_",    8, false, true },   // skip the inner FUN_ hex — handled here
+        {"FUN_",        4, false, false},
+        {"DAT_",        4, true,  false},
+        {"LAB_",        4, false, false},
+        {"EXTR_",       5, false, false},
+    };
+    static const size_t kTokenCount = sizeof(kTokens) / sizeof(kTokens[0]);
+
+    std::string out;
+    out.reserve(code.size() + 64);
+    size_t pos = 0;
+
+    while (pos < code.size()) {
+        // Find the earliest matching token.
+        size_t earliest    = std::string::npos;
+        size_t e_plen      = 0;
+        bool   e_is_data   = false;
+
+        for (size_t ti = 0; ti < kTokenCount; ++ti) {
+            size_t f = code.find(kTokens[ti].prefix, pos);
+            if (f < earliest) {
+                earliest  = f;
+                e_plen    = kTokens[ti].plen;
+                e_is_data = kTokens[ti].is_data;
+            }
+        }
+
+        if (earliest == std::string::npos) {
+            out.append(code, pos, std::string::npos);
+            break;
+        }
+
+        // Word-boundary check: must not be immediately preceded by [A-Za-z0-9_].
+        if (earliest > 0 &&
+            (std::isalnum((unsigned char)code[earliest - 1]) ||
+             code[earliest - 1] == '_')) {
+            out.append(code, pos, earliest - pos + 1);
+            pos = earliest + 1;
+            continue;
+        }
+
+        // Consume hex digits after the prefix.
+        size_t p          = earliest + e_plen;
+        size_t hex_start  = p;
+        while (p < code.size() && std::isxdigit((unsigned char)code[p])) ++p;
+        size_t hex_len    = p - hex_start;
+
+        // Must be 4..16 hex digits, not immediately followed by an identifier char.
+        if (hex_len < 4 || hex_len > 16 ||
+            (p < code.size() &&
+             (std::isalnum((unsigned char)code[p]) || code[p] == '_'))) {
+            out.append(code, pos, earliest - pos + 1);
+            pos = earliest + 1;
+            continue;
+        }
+
+        // For PTR_FUN_ there may be a second _YYYYYYYY chunk (vtable variant).
+        // Consume and discard it — we only need the first VA.
+        if (p < code.size() && code[p] == '_') {
+            size_t p2 = p + 1;
+            size_t h2 = p2;
+            while (p2 < code.size() && std::isxdigit((unsigned char)code[p2])) ++p2;
+            if (p2 - h2 >= 4 && p2 - h2 <= 16 &&
+                (p2 >= code.size() ||
+                 (!std::isalnum((unsigned char)code[p2]) && code[p2] != '_'))) {
+                p = p2;  // skip the second address chunk
+            }
+        }
+
+        uint64_t va = std::strtoull(std::string(code, hex_start, hex_len).c_str(),
+                                    nullptr, 16);
+
+        out.append(code, pos, earliest - pos);  // emit everything before the token
+
+        if (e_is_data) {
+            // DAT_: try C-string, then symbol name, then unk_ADDR.
+            std::string s = elf_read_cstring(elf, va);
+            if (!s.empty()) {
+                out += '"'; out += escape_for_literal(s); out += '"';
+            } else {
+                auto it = sym_map.find(va);
+                if (it != sym_map.end()) {
+                    out += it->second;
+                } else {
+                    char buf[32];
+                    snprintf(buf, sizeof(buf), "unk_%llx", (unsigned long long)va);
+                    out += buf;
+                }
+            }
+        } else {
+            // FUN_ / PTR_FUN_ / LAB_ / EXTR_: look up real name, else sub_ADDR.
+            auto it = sym_map.find(va);
+            if (it != sym_map.end()) {
+                out += it->second;
+            } else {
+                // Emit IDA-style sub_ADDR (uppercase hex, no leading zeros).
+                char buf[32];
+                snprintf(buf, sizeof(buf), "sub_%llX", (unsigned long long)va);
+                out += buf;
+            }
+        }
+        pos = p;
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
 // JNI implementations (unchanged interface)
 // ---------------------------------------------------------------------------
 
@@ -1963,6 +2510,12 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
 
     std::string result(result_cstr);
     free(result_cstr);
+
+    // 0. Resolve Ghidra auto-named tokens (FUN_XXXXXXXX, DAT_XXXXXXXX,
+    //    PTR_FUN_..., thunk_FUN_..., LAB_...) against the ELF symbol table.
+    //    Replaces them with the real symbol name or IDA-style sub_ADDR before
+    //    any other pass runs, so downstream passes see real identifiers.
+    result = resolve_ghidra_tokens(result, elf);
 
     // 1. JNI-aware signature, param renames, vtable call resolution, and
     //    JNI constant naming.  No-op for non-JNI functions.
