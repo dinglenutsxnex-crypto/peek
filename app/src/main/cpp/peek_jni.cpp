@@ -322,7 +322,8 @@ static const StringArgSpec kStringArgFuncs[] = {
 
 // Resolve Ghidra data references and function call arguments INLINE.
 //
-// Pass 1 — *Ram<hex16>: Ghidra emits xRam/iRam/uRam/bRam/lRam/pRam<addr>
+// Pass 1 — *Ram<hex16>: Ghidra emits xRam/iRam/uRam/bRam/lRam/pRam/sRam<addr>
+//   and also multi-char prefix variants pcRam/puRam/plRam/pbRam/psRam/paRam
 //   for any global memory access whose address is statically known.
 //   Resolution order: C-string at addr → symbol name at addr → funcptr at addr.
 //   If nothing resolves, the token is kept as-is.
@@ -397,11 +398,17 @@ static std::string resolve_data_refs(const std::string& code,
             size_t f = code.find("Ram", pos);
             if (f == std::string::npos) { out.append(code, pos, std::string::npos); break; }
 
-            // Must be preceded by a single lowercase letter at a word boundary.
+            // Must be preceded by one or more lowercase letters at a word
+            // boundary.  Walk back past the full lowercase prefix so we catch
+            // both single-char (xRam, pRam) and two-char (pcRam, puRam, plRam,
+            // pbRam, psRam, paRam) Ghidra type-prefix variants.
             if (f < 1 || !std::islower((unsigned char)code[f-1])) {
                 out.append(code, pos, f - pos + 1); pos = f + 1; continue;
             }
             size_t token_start = f - 1;
+            while (token_start > 0 && std::islower((unsigned char)code[token_start - 1]))
+                --token_start;
+            // Word boundary: char before the prefix must not be identifier char.
             if (token_start > 0 &&
                 (std::isalnum((unsigned char)code[token_start-1]) || code[token_start-1]=='_')) {
                 out.append(code, pos, f - pos + 1); pos = f + 1; continue;

@@ -1286,6 +1286,23 @@ static std::string resolve_xunknown_types(const std::string& code) {
         {"int1",    "int8_t"},
         {"int2",    "int16_t"},
         {"int4",    "int32_t"},
+        // Ghidra "undefined<N>" family — emitted when Ghidra knows the width
+        // but not the signedness/type.  Treat as unsigned integer of that width.
+        // Longer before shorter: "undefined8" must not be consumed as "undefined".
+        {"undefined8", "uint64_t"},
+        {"undefined4", "uint32_t"},
+        {"undefined2", "uint16_t"},
+        {"undefined1", "uint8_t"},
+        {"undefined",  "uint8_t"},   // bare "undefined" = 1 byte
+        // Ghidra non-standard C type aliases (common in decompiler output)
+        // Longer before shorter to avoid "ulonglong" being eaten as "ulong".
+        {"ulonglong",  "uint64_t"},
+        {"longlong",   "int64_t"},
+        {"ulong",      "uint32_t"},
+        {"ushort",     "uint16_t"},
+        {"uchar",      "uint8_t"},
+        // "uint" is standard C but Ghidra sometimes uses it without the _t
+        // suffix; leave it alone — it's valid C and understood by readers.
     };
     std::string result = code;
     for (const auto& m : kMap) {
@@ -1364,6 +1381,20 @@ static std::string resolve_register_params(const std::string& code) {
         {"in_d0", "in_s0", "fparam1"},
     };
 
+    // 128-bit SIMD registers: q0..q7 (full 128-bit) and v0..v7 (vector view).
+    // These appear when functions accept or return SIMD values (e.g. AES, SHA,
+    // NEON intrinsics).  Both q and v refer to the same physical register slot.
+    static const struct { const char* qname; const char* vname; const char* param; } kSimdRegs[] = {
+        {"in_q7", "in_v7", "vparam8"},
+        {"in_q6", "in_v6", "vparam7"},
+        {"in_q5", "in_v5", "vparam6"},
+        {"in_q4", "in_v4", "vparam5"},
+        {"in_q3", "in_v3", "vparam4"},
+        {"in_q2", "in_v2", "vparam3"},
+        {"in_q1", "in_v1", "vparam2"},
+        {"in_q0", "in_v0", "vparam1"},
+    };
+
     std::string result = code;
 
     for (const auto& sp : kSpecial)
@@ -1377,6 +1408,11 @@ static std::string resolve_register_params(const std::string& code) {
     for (const auto& fr : kFpRegs) {
         result = replace_ident(result, fr.dname, fr.param);
         result = replace_ident(result, fr.sname, fr.param);
+    }
+
+    for (const auto& sr : kSimdRegs) {
+        result = replace_ident(result, sr.qname, sr.param);
+        result = replace_ident(result, sr.vname, sr.param);
     }
 
     return result;
@@ -2194,7 +2230,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V21\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V23\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
