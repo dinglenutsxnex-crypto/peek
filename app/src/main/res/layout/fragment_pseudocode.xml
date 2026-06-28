@@ -12,14 +12,21 @@
         android:overScrollMode="never"
         android:scrollbars="vertical"
         android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
-        android:scrollbarSize="4dp"
+        android:scrollbarSize="2dp"
         android:fadeScrollbars="false"
+        android:paddingBottom="56dp"
         android:clipToPadding="false">
 
-        <com.nex.peek.ui.PseudocodeView
-            android:id="@+id/pseudocodeView"
+        <TextView
+            android:id="@+id/tvPseudocode"
             android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
+            android:layout_height="wrap_content"
+            android:padding="12dp"
+            android:textColor="@color/operand_color"
+            android:textSize="12sp"
+            android:fontFamily="monospace"
+            android:lineSpacingMultiplier="1.25"
+            android:textIsSelectable="true" />
 
     </ScrollView>
 

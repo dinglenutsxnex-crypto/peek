@@ -13,11 +13,12 @@
         android:orientation="vertical"
         android:background="@color/bg_dark">
 
+        <!-- Full-width header: spans the whole screen, sits above the split. -->
         <androidx.appcompat.widget.Toolbar
             android:id="@+id/toolbar"
             android:layout_width="match_parent"
-            android:layout_height="37dp"
-            android:minHeight="37dp"
+            android:layout_height="32dp"
+            android:minHeight="32dp"
             android:background="@color/bg_elevated"
             app:titleTextColor="@color/text_primary"
             app:subtitleTextColor="@color/text_secondary"
@@ -31,6 +32,7 @@
             android:layout_height="1dp"
             android:background="@color/divider" />
 
+        <!-- Below the header: left function panel + draggable divider + content. -->
         <LinearLayout
             android:layout_width="match_parent"
             android:layout_height="0dp"
@@ -44,6 +46,36 @@
                 android:layout_height="match_parent"
                 android:orientation="vertical"
                 android:background="@color/bg_surface">
+
+            <!-- Expandable View Options -->
+            <LinearLayout
+                android:id="@+id/viewOptionsContainer"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:orientation="vertical"
+                android:visibility="gone">
+
+                <TextView
+                    android:layout_width="match_parent"
+                    android:layout_height="32dp"
+                    android:background="@color/bg_elevated"
+                    android:gravity="center_vertical"
+                    android:paddingStart="12dp"
+                    android:text="VIEW OPTIONS"
+                    android:textColor="@color/text_secondary"
+                    android:textSize="10sp"
+                    android:fontFamily="monospace" />
+
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvViewOptions"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content" />
+
+                <View
+                    android:layout_width="match_parent"
+                    android:layout_height="1dp"
+                    android:background="@color/divider" />
+            </LinearLayout>
 
                 <EditText
                     android:id="@+id/etSearch"
@@ -65,45 +97,29 @@
                     android:layout_height="1dp"
                     android:background="@color/divider" />
 
-                <FrameLayout
+                <androidx.recyclerview.widget.RecyclerView
+                    android:id="@+id/rvFunctions"
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
-                    android:layout_weight="1">
-
-                    <androidx.recyclerview.widget.RecyclerView
-                        android:id="@+id/rvFunctions"
-                        android:layout_width="match_parent"
-                        android:layout_height="match_parent"
-                        android:overScrollMode="never"
-                        android:clipToPadding="false"
-                        android:paddingTop="12dp"
-                        android:paddingBottom="32dp"
-                        android:paddingEnd="6dp"
-                        android:scrollbars="vertical"
-                        android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
-                        android:scrollbarSize="4dp"
-                        android:fadeScrollbars="false" />
-
-                    <View
-                        android:id="@+id/scrollHint"
-                        android:layout_width="match_parent"
-                        android:layout_height="32dp"
-                        android:layout_gravity="bottom"
-                        android:background="@drawable/scroll_hint_gradient"
-                        android:importantForAccessibility="no" />
-
-                </FrameLayout>
+                    android:layout_weight="1"
+                    android:overScrollMode="never"
+                    android:clipToPadding="false"
+                    android:paddingTop="12dp"
+                    android:scrollbars="vertical"
+                    android:scrollbarThumbVertical="@drawable/scrollbar_thumb"
+                    android:scrollbarSize="2dp"
+                    android:fadeScrollbars="false" />
 
             </LinearLayout>
 
-            <!-- Draggable divider -->
+            <!-- Draggable divider: 8dp solid bar -->
             <View
                 android:id="@+id/dividerHandle"
                 android:layout_width="8dp"
                 android:layout_height="match_parent"
                 android:background="@color/divider" />
 
-            <!-- Right: tabs + content -->
+            <!-- Right: tabs + content (toolbar no longer lives in here) -->
             <LinearLayout
                 android:layout_width="0dp"
                 android:layout_height="match_parent"
@@ -133,130 +149,12 @@
                     android:id="@+id/viewPager"
                     android:layout_width="match_parent"
                     android:layout_height="0dp"
-                    android:layout_weight="1" />
+                android:layout_weight="1"
+                android:paddingTop="12dp" />
 
             </LinearLayout>
 
         </LinearLayout>
-
-    </LinearLayout>
-
-    <!-- Floating download dropdown — same style as view options -->
-    <LinearLayout
-        android:id="@+id/downloadContainer"
-        android:layout_width="180dp"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="42dp"
-        android:layout_marginEnd="40dp"
-        android:background="@color/bg_elevated"
-        android:elevation="12dp">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="28dp"
-            android:background="@color/bg_elevated"
-            android:gravity="center_vertical"
-            android:paddingStart="12dp"
-            android:text="DOWNLOAD"
-            android:textColor="@color/text_secondary"
-            android:textSize="10sp"
-            android:fontFamily="monospace" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider" />
-
-        <TextView
-            android:id="@+id/dlHex"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:gravity="center_vertical"
-            android:paddingStart="12dp"
-            android:text="Download Hex"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:background="?attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider" />
-
-        <TextView
-            android:id="@+id/dlAsm"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:gravity="center_vertical"
-            android:paddingStart="12dp"
-            android:text="Download Disassembly"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:background="?attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider" />
-
-        <TextView
-            android:id="@+id/dlPseudocode"
-            android:layout_width="match_parent"
-            android:layout_height="40dp"
-            android:gravity="center_vertical"
-            android:paddingStart="12dp"
-            android:text="Download Pseudocode"
-            android:textColor="@color/text_primary"
-            android:textSize="12sp"
-            android:fontFamily="monospace"
-            android:background="?attr/selectableItemBackground"
-            android:clickable="true"
-            android:focusable="true" />
-
-    </LinearLayout>
-
-    <!-- Floating view-options dropdown -->
-    <LinearLayout
-        android:id="@+id/viewOptionsContainer"
-        android:layout_width="180dp"
-        android:layout_height="wrap_content"
-        android:orientation="vertical"
-        android:visibility="gone"
-        android:layout_gravity="top|end"
-        android:layout_marginTop="42dp"
-        android:layout_marginEnd="4dp"
-        android:background="@color/bg_elevated"
-        android:elevation="12dp">
-
-        <TextView
-            android:layout_width="match_parent"
-            android:layout_height="28dp"
-            android:background="@color/bg_elevated"
-            android:gravity="center_vertical"
-            android:paddingStart="12dp"
-            android:text="VIEW OPTIONS"
-            android:textColor="@color/text_secondary"
-            android:textSize="10sp"
-            android:fontFamily="monospace" />
-
-        <View
-            android:layout_width="match_parent"
-            android:layout_height="1dp"
-            android:background="@color/divider" />
-
-        <androidx.recyclerview.widget.RecyclerView
-            android:id="@+id/rvViewOptions"
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content" />
 
     </LinearLayout>
 

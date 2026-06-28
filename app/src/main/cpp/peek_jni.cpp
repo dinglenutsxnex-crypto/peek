@@ -1664,6 +1664,8 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     std::string result(result_cstr);
     free(result_cstr);
 
+    std::string pre_annotate_snapshot = result;  // temporary diagnostic
+
     // 1. JNI-aware signature, param renames, vtable call resolution, and
     //    JNI constant naming.  No-op for non-JNI functions.
     result = jni_annotate(fn.name, result);
@@ -1682,6 +1684,27 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     // 4. Store with a version tag so stale cache entries are auto-detected.
     ctx->db->store_pseudocode((int64_t)func_id, CACHE_TAG + result);
     LOGI("Decompiled %s (%zu chars)", fn.name.c_str(), result.size());
+
+    // --- BUILD-FINGERPRINT MARKER (temporary diagnostic) ---
+    // Proves on-device, without adb/logcat, whether THIS exact patched
+    // peek_jni.cpp/decompiler_bridge.cpp is what actually ran for this
+    // function — not just "the app launched", but "populate_sig_cache's
+    // Source 3 (PLT-thunk → real signature) and the c_sigs build for this
+    // specific call actually executed". sig_cache.size()==0 would mean
+    // populate_sig_cache never ran or returned nothing at all (e.g. an old
+    // binary cached before this fix, or run_analysis bailing early).
+    {
+        std::ostringstream marker;
+        marker << "[PEEK-FIX-MARKER v5] sig_cache=" << ctx->sig_cache.size()
+               << " c_sigs_for_this_call=" << c_sigs.size()
+               << " inferred=" << (inferred.is_set ? "yes" : "no")
+               << "\n[DIAG] " << peek_get_diag_trace()
+               << "\n[RAW_BRIDGE_OUTPUT len=" << pre_annotate_snapshot.size() << "]\n"
+               << pre_annotate_snapshot
+               << "\n[POST_ANNOTATE len=" << result.size() << "]"
+               << "\n===PEEK_BODY_START===\n";
+        result = marker.str() + result;
+    }
 
     // 5. Lazy learning — if the decompiler inferred a prototype for this
     //    function, store it in the signature cache and DB so future callers
