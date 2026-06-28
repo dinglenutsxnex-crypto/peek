@@ -26,9 +26,12 @@ description: The ordered post-processing passes applied after Ghidra decompiles 
   - `in_x8` → ret_ptr, `in_x18` → tls_ptr
   - Processed longest-name-first (in_x18 before in_x1).
 - U0b3: `resolve_goto_labels` — code_r0x<hex> → L_<hex>
+- U0c4: `normalize_plus_neg` — `val + -1` → `val - 1`, `ptr + -0x18` → `ptr - 0x18` (Ghidra always emits addition of a negative literal instead of subtraction).
+- U0b2 also now handles: `unaff_x29` → `frame_ptr`, `unaff_x30` → `link_reg`, `extraout_x0/x1` → `ret0/ret1`, `BADSPACEBASE` → `sp`, `register0x00000008` → `x8_reg`.
 - U0c: `resolve_ghidra_pseudoops` — CONCAT/CARRY/SCARRY/SBORROW/SUB expansions.
 - U1: `strip_stack_canary` — remove tpidr_el0 / canary boilerplate.
 - U2: `rename_return_var` — rename sole return accumulator to `ret`.
+- U2b: `collapse_atomic_refcount` — collapses the ARM64 LDXR/STXR exclusive-monitor std::string refcount pattern. Detects `if (pthread_create == 0) { ... } else { do { ExclusiveMonitorPass ... } while (...); }` (~100 occurrences per file) and replaces with just the simple branch body at one less indent level.
 - U3–U6: write-only var removal, dead-init removal, implicit return fix, generic var rename.
 - JNI-specific (J1–J6): signature fix, param renames, vtable calls, JNI constants, local type inference, RegisterNatives collapse.
 
@@ -46,7 +49,7 @@ The walk-back loop at the "Ram" search in Pass 1 now consumes **all** lowercase 
 
 **Why:** The DB caches pseudocode per function. Any pass change produces different output. `JNI_ANNOTATOR_CACHE_TAG` (in `jni_annotator.cpp`, referenced in `peek_jni.cpp`) is prepended; a mismatch triggers auto re-decompilation.
 
-**How to apply:** Bump the tag whenever any pass changes output. Current tag: `"\x01PEEK_ANN_V23\x01\n"`.
+**How to apply:** Bump the tag whenever any pass changes output. Current tag: `"\x01PEEK_ANN_V24\x01\n"`.
 
 **Important:** Brace-counting scripts must be string/char-aware — the tag contains `\x01` escapes.
 

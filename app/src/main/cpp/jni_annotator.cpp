@@ -1395,6 +1395,35 @@ static std::string resolve_register_params(const std::string& code) {
         {"in_q0", "in_v0", "vparam1"},
     };
 
+    // Callee-saved registers that Ghidra tracks as "unaffected" live-ins.
+    // x29 is the ARM64 frame pointer; x30 is the link register (return addr).
+    // Prefix longest-first so unaff_x29 can't be consumed as part of unaff_x2.
+    static const struct { const char* raw; const char* name; } kUnaff[] = {
+        {"unaff_x30", "link_reg"},
+        {"unaff_x29", "frame_ptr"},
+    };
+
+    // Ghidra "extra output" register names — values sitting in x0/x1 after a
+    // call that the declared return type doesn't account for.
+    // Longer suffixed forms first (_00, _01) so the plain form matches last.
+    static const struct { const char* raw; const char* name; } kExtraout[] = {
+        {"extraout_x0_00", "ret0_b"},
+        {"extraout_x1_00", "ret1_b"},
+        {"extraout_x0",    "ret0"},
+        {"extraout_x1",    "ret1"},
+    };
+
+    // Ghidra internal identifiers that represent hardware registers or
+    // pseudo-registers with no natural C name.
+    static const struct { const char* raw; const char* name; } kInternals[] = {
+        // BADSPACEBASE: Ghidra emits this when stack-frame analysis fails;
+        // it represents the hardware stack pointer.
+        {"BADSPACEBASE",      "sp"},
+        // register0x00000008: Ghidra's encoding for an untracked physical
+        // register (x8 in AArch64, used here as a frame-base reference).
+        {"register0x00000008","x8_reg"},
+    };
+
     std::string result = code;
 
     for (const auto& sp : kSpecial)
@@ -1414,6 +1443,15 @@ static std::string resolve_register_params(const std::string& code) {
         result = replace_ident(result, sr.qname, sr.param);
         result = replace_ident(result, sr.vname, sr.param);
     }
+
+    for (const auto& u : kUnaff)
+        result = replace_ident(result, u.raw, u.name);
+
+    for (const auto& e : kExtraout)
+        result = replace_ident(result, e.raw, e.name);
+
+    for (const auto& k : kInternals)
+        result = replace_ident(result, k.raw, k.name);
 
     return result;
 }
@@ -1468,6 +1506,168 @@ static std::string resolve_goto_labels(const std::string& code) {
         pos = h;
     }
     return out;
+}
+
+// ---------------------------------------------------------------------------
+// U0c4. Arithmetic sign normalisation
+//
+// Ghidra consistently emits   val + -1   instead of   val - 1   for any
+// subtraction whose immediate operand fits in an immediate field.  This pass
+// converts every   <token> + -<decimal-or-hex-literal>   to the equivalent
+// subtraction form so the output reads as natural C.
+//
+// Examples:
+//   val + -1          →  val - 1
+//   ptr + -0x18       →  ptr - 0x18
+//   piVar5 + -1       →  piVar5 - 1
+// ---------------------------------------------------------------------------
+
+static std::string normalize_plus_neg(const std::string& code) {
+    // Quick exit if there is nothing to normalise.
+    if (code.find("+ -") == std::string::npos) return code;
+
+    std::string out;
+    out.reserve(code.size());
+    size_t pos = 0;
+
+    while (pos < code.size()) {
+        size_t f = code.find("+ -", pos);
+        if (f == std::string::npos) { out.append(code, pos, std::string::npos); break; }
+
+        // The character after "- " must be a decimal digit or "0x" (hex literal).
+        size_t after = f + 3;
+        bool is_dec = after < code.size() &&
+                      std::isdigit(static_cast<unsigned char>(code[after]));
+        bool is_hex = (after + 1 < code.size()) &&
+                      code[after] == '0' && code[after + 1] == 'x';
+
+        if (is_dec || is_hex) {
+            out.append(code, pos, f - pos);
+            out += "- ";          // replace "+" with "-", keep the space
+            pos = after;          // skip over the original "- " part
+        } else {
+            // Not a numeric literal — emit the "+" literally and keep scanning.
+            out.append(code, pos, f - pos + 1);
+            pos = f + 1;
+        }
+    }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// U2b. ARM64 exclusive-monitor refcount collapse
+//
+// Ghidra translates the LDXR/STXR (load-exclusive / store-exclusive) pair
+// used for atomic reference-count decrements in libstdc++ std::string as two
+// separate code paths gated on a compile-time "pthread_create == 0" check.
+// The resulting boilerplate appears around 100 times per file and is entirely
+// noise for a human reader.
+//
+// Pattern detected:
+//   if (pthread_create == 0) {
+//     <simple load+decrement>    ← single-threaded path
+//   }
+//   else {
+//     do { ... ExclusiveMonitorPass ... } while (...);
+//   }
+//
+// The entire if/else is replaced with just the body of the simple branch
+// (with one indentation level removed), which is semantically identical to
+// what the code actually does in either path.
+// ---------------------------------------------------------------------------
+
+static std::string collapse_atomic_refcount(const std::string& code) {
+    if (code.find("pthread_create == 0") == std::string::npos) return code;
+    if (code.find("ExclusiveMonitorPass")  == std::string::npos) return code;
+
+    std::vector<std::string> lines = split_lines(code);
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+
+    size_t i = 0;
+    while (i < lines.size()) {
+        // Look for the sentinel line.
+        size_t p = lines[i].find("if (pthread_create == 0)");
+        if (p == std::string::npos) { out.push_back(lines[i++]); continue; }
+
+        // Base indentation = everything before "if".
+        std::string base_indent(lines[i].begin(), lines[i].begin() + p);
+        // Inner indentation is two spaces deeper.
+        std::string inner_indent = base_indent + "  ";
+
+        // ---- Step 1: count braces to collect the simple (if) branch body ----
+        int depth = 0;
+        for (char c : lines[i]) {
+            if (c == '{') ++depth;
+            else if (c == '}') --depth;
+        }
+        // After the sentinel line, depth should be exactly 1 (one open brace).
+        if (depth != 1) { out.push_back(lines[i++]); continue; }
+
+        size_t j = i + 1;
+        std::vector<std::string> simple_body;
+
+        while (j < lines.size() && depth > 0) {
+            for (char c : lines[j]) {
+                if (c == '{') ++depth;
+                else if (c == '}') --depth;
+            }
+            // Add line only while we are still inside the block (depth > 0
+            // AFTER decrement means the closing '}' itself is excluded).
+            if (depth > 0) simple_body.push_back(lines[j]);
+            ++j;
+        }
+        // j now points to the line after the closing '}' of the simple branch.
+
+        // ---- Step 2: skip optional blank lines then find "else {" ----
+        while (j < lines.size() &&
+               lines[j].find_first_not_of(" \t") == std::string::npos) ++j;
+
+        if (j >= lines.size() || lines[j].find("else") == std::string::npos) {
+            // No else block — emit unchanged.
+            out.push_back(lines[i++]); continue;
+        }
+
+        // ---- Step 3: scan the else block, verify ExclusiveMonitorPass ----
+        size_t else_line = j;
+        depth = 0;
+        for (char c : lines[j]) {
+            if (c == '{') ++depth;
+            else if (c == '}') --depth;
+        }
+        ++j;
+
+        bool has_exclusive = false;
+        while (j < lines.size() && depth > 0) {
+            if (lines[j].find("ExclusiveMonitorPass") != std::string::npos)
+                has_exclusive = true;
+            for (char c : lines[j]) {
+                if (c == '{') ++depth;
+                else if (c == '}') --depth;
+            }
+            ++j;
+        }
+
+        if (!has_exclusive) { out.push_back(lines[i++]); continue; }
+
+        // ---- Step 4: emit the simple branch lines at base indentation ----
+        for (const std::string& sl : simple_body) {
+            if (sl.size() >= inner_indent.size() &&
+                sl.substr(0, inner_indent.size()) == inner_indent) {
+                out.push_back(base_indent + sl.substr(inner_indent.size()));
+            } else {
+                // Fallback: strip two leading spaces (or one tab) if present.
+                size_t skip = 0;
+                if (!sl.empty() && sl[0] == '\t') skip = 1;
+                else if (sl.size() >= 2 && sl[0] == ' ' && sl[1] == ' ') skip = 2;
+                out.push_back(sl.substr(skip));
+            }
+        }
+
+        i = j;   // resume past the entire if/else block
+    }
+
+    return join_lines(out);
 }
 
 // ---------------------------------------------------------------------------
@@ -2230,7 +2430,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V23\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V24\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -2275,6 +2475,11 @@ std::string jni_annotate(const std::string& func_name,
     // code_r0x<hex>: / goto code_r0x<hex>; → L_<hex>: / goto L_<hex>;
     result = resolve_goto_labels(result);
 
+    // ---- U0c4. Arithmetic sign normalisation ------------------------------
+    // "val + -1" → "val - 1", "ptr + -0x18" → "ptr - 0x18", etc.
+    // Run early so all subsequent passes see clean subtraction syntax.
+    result = normalize_plus_neg(result);
+
     // ---- U0c. Resolve Ghidra arithmetic pseudo-ops -------------------------
     // CONCAT<A><B>(hi,lo) → bit-shift expression.
     // CARRY<N>(x,y)       → unsigned add-carry inline expression.
@@ -2294,6 +2499,11 @@ std::string jni_annotate(const std::string& func_name,
     // Any generic iVarN / xVarN that appears exclusively in "return <var>;"
     // is renamed to the idiomatic name "ret".
     result = rename_return_var(result);
+
+    // ---- U2b. Collapse ARM64 LDXR/STXR atomic refcount pattern -------------
+    // Replaces the Ghidra-emitted pthread_create==0 / ExclusiveMonitorPass
+    // boilerplate (~100 occurrences per file) with the simple branch body.
+    result = collapse_atomic_refcount(result);
 
     // -----------------------------------------------------------------------
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*
