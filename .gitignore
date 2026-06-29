@@ -1,0 +1,15 @@
+# Ghidra decompiler C++ source — fetched from GitHub in CI, not committed.
+# To build locally, run: ./scripts/fetch_ghidra_decomp.sh
+app/src/main/cpp/decompiler/
+
+# Gradle build outputs
+.gradle/
+build/
+app/build/
+
+# Android local config
+local.properties
+
+# IDE
+.idea/
+*.iml

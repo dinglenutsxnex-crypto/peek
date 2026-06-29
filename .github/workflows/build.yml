@@ -20,12 +20,51 @@ jobs:
       - uses: android-actions/setup-android@v3
 
       - name: Install host build tools
-        run: sudo apt-get install -y bison
+        run: sudo apt-get install -y bison wget
 
       - name: Install NDK + CMake
         run: |
           echo "y" | $ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager \
             "ndk;27.2.12479018" "cmake;3.22.1"
+
+      - name: Fetch Ghidra decompiler source
+        run: |
+          # Download the Ghidra 12.1.2 source zip from GitHub.
+          # We extract only Ghidra/Features/Decompiler/src/decompile/cpp/
+          # into app/src/main/cpp/decompiler/ (gitignored, not committed).
+          wget -q \
+            "https://github.com/NationalSecurityAgency/ghidra/archive/refs/tags/Ghidra_12.1.2_build.zip" \
+            -O /tmp/ghidra.zip
+
+          python3 - << 'EOF'
+          import zipfile, os, sys
+
+          prefix = "ghidra-Ghidra_12.1.2_build/Ghidra/Features/Decompiler/src/decompile/cpp/"
+          dest   = "app/src/main/cpp/decompiler"
+          os.makedirs(dest, exist_ok=True)
+          extracted = 0
+          with zipfile.ZipFile("/tmp/ghidra.zip") as z:
+              for info in z.infolist():
+                  n = info.filename
+                  if n.startswith(prefix) and not n.endswith("/"):
+                      fname = os.path.basename(n)
+                      with z.open(info) as src, open(f"{dest}/{fname}", "wb") as dst:
+                          dst.write(src.read())
+                      extracted += 1
+          print(f"Extracted {extracted} files to {dest}")
+          if extracted == 0:
+              sys.exit(1)
+          EOF
+
+          # Apply the RawLoadImage::adjustVma null-deref guard.
+          # spaceid is null when adjustVma is called from buildLoader();
+          # it is only assigned later in postSpecFile(). Without this guard
+          # the decompiler crashes with SIGSEGV at 0x64 on any non-zero vma.
+          sed -i \
+            's/uint4 ws = spaceid->getWordSize();/uint4 ws = (spaceid != (AddrSpace *)0) ? spaceid->getWordSize() : 1;/' \
+            app/src/main/cpp/decompiler/loadimage.cc
+
+          echo "Ghidra decompiler source ready."
 
       - uses: gradle/actions/setup-gradle@v3
         with:

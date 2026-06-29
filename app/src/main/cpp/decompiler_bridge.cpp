@@ -338,12 +338,15 @@ static bool rewrite_tail_call(std::vector<uint8_t>& buf, uint64_t base_addr,
     return true;
 }
 
-char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
-                               const char*    func_name,
-                               const char*    tmp_path,
-                               uint64_t       real_func_addr,
+char* peek_decompile_bytes_v3(const uint8_t*     bytes,
+                               size_t             len,
+                               const char*        func_name,
+                               const char*        tmp_path,
+                               uint64_t           real_func_addr,
                                const PeekFuncSig* sigs,
-                               size_t         sig_count,
+                               size_t             sig_count,
+                               const PeekDataSym* dsyms,
+                               size_t             dsym_count,
                                PeekInferredSig*   out_inferred)
 {
     g_last_error.clear();
@@ -441,6 +444,48 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
             }
             LOGI_B("[S2.5] injected %zu/%zu signatures for %s",
                    injected, sig_count, func_name);
+        }
+
+        // ------------------------------------------------------------------
+        // Stage 2.5b — comprehensive ELF symbol / data-label injection
+        //
+        // Inject ALL known ELF symbols (functions and data objects) into
+        // Ghidra's global scope so the decompiler emits real names directly
+        // instead of generating FUN_addr / DAT_addr auto-names.
+        //
+        // This is the r2ghidra-style approach: pre-populate the scope with
+        // the full symbol table rather than text-rewriting the output.
+        //
+        // - Function symbols  → scope->addFunction  (creates FunctionSymbol)
+        // - Data/label symbols → scope->addCodeLabel (creates LabSymbol)
+        //
+        // Errors are non-fatal; a collision or invalid address is caught and
+        // skipped — the worst outcome is Ghidra falls back to its auto-name
+        // for that address, same as before.
+        // ------------------------------------------------------------------
+        if (dsyms && dsym_count > 0) {
+            LOGI_B("[S2.5b] injecting %zu ELF labels for %s",
+                   dsym_count, func_name);
+            Scope* lscope = arch->symboltab->getGlobalScope();
+            size_t dsym_ok = 0;
+            for (size_t i = 0; i < dsym_count; ++i) {
+                const PeekDataSym& ds = dsyms[i];
+                if (!ds.name || ds.name[0] == '\0' || ds.address == 0) continue;
+                if (ds.address == real_func_addr) continue;
+                Address dsAddr(ram, (uintb)ds.address);
+                try {
+                    if (ds.is_func)
+                        lscope->addFunction(dsAddr, ds.name);
+                    else
+                        lscope->addCodeLabel(dsAddr, ds.name);
+                    ++dsym_ok;
+                } catch (...) {
+                    // Collision with an existing symbol or out-of-range
+                    // address — skip silently.
+                }
+            }
+            LOGI_B("[S2.5b] injected %zu/%zu ELF labels for %s",
+                   dsym_ok, dsym_count, func_name);
         }
 
         // ------------------------------------------------------------------
@@ -643,6 +688,25 @@ char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
 }
 
 // ---------------------------------------------------------------------------
+// V2 — wrapper around V3 with zero data syms (ABI compatibility)
+// ---------------------------------------------------------------------------
+
+char* peek_decompile_bytes_v2(const uint8_t* bytes, size_t len,
+                               const char*    func_name,
+                               const char*    tmp_path,
+                               uint64_t       real_func_addr,
+                               const PeekFuncSig* sigs,
+                               size_t         sig_count,
+                               PeekInferredSig*   out_inferred)
+{
+    return peek_decompile_bytes_v3(bytes, len, func_name, tmp_path,
+                                   real_func_addr,
+                                   sigs, sig_count,
+                                   nullptr, 0,
+                                   out_inferred);
+}
+
+// ---------------------------------------------------------------------------
 // V1 — backwards-compatible wrapper
 // ---------------------------------------------------------------------------
 
@@ -650,9 +714,11 @@ char* peek_decompile_bytes(const uint8_t* bytes, size_t len,
                             const char* func_name, const char* tmp_path,
                             uint64_t real_func_addr)
 {
-    return peek_decompile_bytes_v2(bytes, len, func_name, tmp_path,
+    return peek_decompile_bytes_v3(bytes, len, func_name, tmp_path,
                                    real_func_addr,
-                                   nullptr, 0, nullptr);
+                                   nullptr, 0,
+                                   nullptr, 0,
+                                   nullptr);
 }
 
 void peek_decompiler_shutdown(void) {

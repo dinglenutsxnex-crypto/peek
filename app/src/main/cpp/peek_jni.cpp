@@ -1988,27 +1988,13 @@ static bool run_analysis(AnalysisContext& ctx) {
     return true;
 }
 
-// ---------------------------------------------------------------------------
-// Ghidra auto-name token resolution
-//
-// Ghidra emits auto-generated names for things it cannot resolve:
-//   FUN_XXXXXXXX  — function at address XXXXXXXX (uppercase hex, 4-16 digits)
-//   DAT_XXXXXXXX  — data item at address XXXXXXXX
-//   PTR_FUN_XXXXXXXX_YYYYYYYY — pointer to function (e.g. vtable slots)
-//   LAB_XXXXXXXX  — code label
-//   EXTR_XXXXXXXX — external symbol placeholder
-//   thunk_FUN_XXXXXXXX — thunk wrapper around FUN_XXXXXXXX
-//
-// This pass runs BEFORE resolve_data_refs so that downstream passes see real
-// symbol names instead of raw FUN_/DAT_ placeholders.  Resolution strategy:
-//   FUN_ / PTR_FUN_ / thunk_FUN_:  look up VA in sym_map; fall back to
-//       sub_ADDR (IDA-style uppercase hex, no leading zeros).
-//   DAT_: try C-string at VA, then sym_map, then unk_ADDR.
-//   LAB_ / EXTR_: look up sym_map; keep raw token if not found.
-// ---------------------------------------------------------------------------
+// resolve_ghidra_tokens removed: ELF symbols are now injected directly into
+// Ghidra's scope in Stage 2.5b of decompiler_bridge, so the decompiler
+// emits real names without any text-rewriting pass.
 
-static std::string resolve_ghidra_tokens(const std::string& code,
-                                          const ElfParseResult& elf) {
+#if 0  // DEAD CODE — kept for reference only; never compiled
+static std::string resolve_ghidra_tokens_DELETED(const std::string& code,
+                                                   const ElfParseResult& elf) {
     if (code.empty()) return code;
 
     // Build a VA → name lookup (symbols first, then functions without override).
@@ -2146,9 +2132,10 @@ static std::string resolve_ghidra_tokens(const std::string& code,
     }
     return out;
 }
+#endif  // end DEAD CODE block
 
 // ---------------------------------------------------------------------------
-// JNI implementations (unchanged interface)
+// JNI implementations
 // ---------------------------------------------------------------------------
 
 extern "C" {
@@ -2463,7 +2450,7 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     tmp_ss << ctx->tmp_dir << "/decomp_" << std::hex << (int64_t)func_id << ".bin";
     std::string tmp_path = tmp_ss.str();
 
-    // Build the flat C-struct array that peek_decompile_bytes_v2 accepts.
+    // Build the flat C-struct array of typed function signatures (v3 sigs).
     // We keep the strings alive in sig_cache (which owns them) — the PeekFuncSig
     // pointers are valid for the duration of this call.
     std::vector<PeekFuncSig> c_sigs;
@@ -2477,6 +2464,36 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         cs.param_count = s.param_count;
         cs.params_csv  = s.params_csv.empty() ? nullptr : s.params_csv.c_str();
         c_sigs.push_back(cs);
+    }
+
+    // Build comprehensive ELF label array (v3 dsyms).
+    // All ELF symbols (functions + data objects) are injected into Ghidra's
+    // scope before decompilation so the decompiler emits real names directly
+    // instead of auto-generating FUN_addr / DAT_addr tokens.
+    // dsym_names keeps the std::string storage alive; c_dsyms holds raw
+    // const char* pointers into that storage.  Reserve upfront so that
+    // push_back never causes a reallocation that would invalidate .c_str().
+    std::vector<std::string> dsym_names;
+    std::vector<PeekDataSym> c_dsyms;
+    dsym_names.reserve(elf.symbols.size() + elf.functions.size());
+    c_dsyms.reserve(elf.symbols.size() + elf.functions.size());
+    for (const auto& sym : elf.symbols) {
+        if (sym.address == 0 || sym.name.empty() || sym.address == fn.address) continue;
+        dsym_names.push_back(sym.name);
+        PeekDataSym ds;
+        ds.address = sym.address;
+        ds.name    = dsym_names.back().c_str();
+        ds.is_func = (sym.type == STT_FUNC) ? 1 : 0;
+        c_dsyms.push_back(ds);
+    }
+    for (const auto& func : elf.functions) {
+        if (func.address == 0 || func.name.empty() || func.address == fn.address) continue;
+        dsym_names.push_back(func.name);
+        PeekDataSym ds;
+        ds.address = func.address;
+        ds.name    = dsym_names.back().c_str();
+        ds.is_func = 1;
+        c_dsyms.push_back(ds);
     }
 
     // ------------------------------------------------------------------
@@ -2496,10 +2513,11 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
 
     g_decomp_active = true;
     if (sigsetjmp(g_decomp_jmp, /*savemask=*/1) == 0) {
-        result_cstr = peek_decompile_bytes_v2(
+        result_cstr = peek_decompile_bytes_v3(
             data, (size_t)code_len,
             fn.name.c_str(), tmp_path.c_str(), (uint64_t)fn.address,
-            c_sigs.empty() ? nullptr : c_sigs.data(), c_sigs.size(),
+            c_sigs.empty()  ? nullptr : c_sigs.data(),  c_sigs.size(),
+            c_dsyms.empty() ? nullptr : c_dsyms.data(), c_dsyms.size(),
             &inferred);
         g_decomp_active = false;
     } else {
@@ -2532,25 +2550,22 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     std::string result(result_cstr);
     free(result_cstr);
 
-    // 0. Resolve Ghidra auto-named tokens (FUN_XXXXXXXX, DAT_XXXXXXXX,
-    //    PTR_FUN_..., thunk_FUN_..., LAB_...) against the ELF symbol table.
-    //    Replaces them with the real symbol name or IDA-style sub_ADDR before
-    //    any other pass runs, so downstream passes see real identifiers.
-    result = resolve_ghidra_tokens(result, elf);
+    // 0. (resolve_ghidra_tokens removed — ELF symbols were injected into
+    //    Ghidra's scope in Stage 2.5b, so the decompiler emits real names.)
 
     // 1. JNI-aware signature, param renames, vtable call resolution, and
-    //    JNI constant naming.  No-op for non-JNI functions.
+    //    JNI constant naming.  Also normalises Ghidra internal type names
+    //    (xunknown1/2/4/8 → uint8_t/…, in_x0 → param1, CONCAT/CARRY/…).
+    //    No-op for non-JNI functions except the normalisation passes.
     result = jni_annotate(fn.name, result);
 
-    // 2. ELF data-reference resolution: annotate xRam<addr> tokens with
-    //    the string they point to, and annotate known JNI string arguments
-    //    (FindClass, GetMethodID, etc.) whose value Ghidra shows as a hex VA.
+    // 2. ELF data-reference resolution: annotate any remaining xRam<addr>
+    //    tokens (addresses with no ELF symbol) with the string they point
+    //    to, and annotate known JNI string arguments.
     result = resolve_data_refs(result, elf);
 
     // 3. Algorithm detection: prepend "// detected - NAME (detection may be
-    //    wrong)" comment lines for any recognised crypto/obfuscation patterns.
-    //    Runs after data-ref resolution so the detector sees the cleanest
-    //    possible pseudocode (resolved names, not raw xRam tokens).
+    //    wrong)" comment lines for recognised crypto/obfuscation patterns.
     result = annotate_algorithms(result);
 
     // 4. Store with a version tag so stale cache entries are auto-detected.
