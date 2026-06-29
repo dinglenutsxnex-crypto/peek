@@ -161,4 +161,30 @@ object PeekNative {
 
     @JvmStatic private external fun nativeInitDecompiler(specDir: String): Boolean
     @JvmStatic private external fun nativeDecompileFunction(handle: Long, funcId: Long): String
+
+    // -----------------------------------------------------------------------
+    // Unity / IL2CPP
+    // -----------------------------------------------------------------------
+
+    /**
+     * Opens a Unity IL2CPP binary: runs the standard analysis pipeline on
+     * [soPath], then parses [metaPath] (global-metadata.dat) and renames
+     * every matched function with its C# type::method name.
+     * Returns a handle (same type as openBinary) or 0 on failure.
+     */
+    fun openUnityBinary(soPath: String, metaPath: String, dbDir: String): Long =
+        nativeOpenUnityBinary(soPath, metaPath, dbDir)
+
+    /** Returns the IL2CPP dump diagnostic log (metadata version, method count, etc.). */
+    fun getIl2CppLog(handle: Long): String =
+        if (handle == 0L) "" else nativeGetIl2CppLog(handle)
+
+    /** Returns true if the binary was loaded via the Unity / IL2CPP path. */
+    fun isUnityBinary(handle: Long): Boolean =
+        if (handle == 0L) false else nativeIsUnityBinary(handle)
+
+    @JvmStatic private external fun nativeOpenUnityBinary(
+        soPath: String, metaPath: String, dbDir: String): Long
+    @JvmStatic private external fun nativeGetIl2CppLog(handle: Long): String
+    @JvmStatic private external fun nativeIsUnityBinary(handle: Long): Boolean
 }

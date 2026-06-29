@@ -1,6 +1,7 @@
 #pragma once
 
 #include "elf_parser.h"
+#include <unordered_map>
 #include "disassembler.h"
 #include "xref_detector.h"
 
@@ -129,6 +130,14 @@ public:
     std::vector<FuncSignature> get_signatures(int64_t binary_id);
     // Returns true if a signature already exists for (binary_id, address).
     bool has_signature(int64_t binary_id, uint64_t address);
+
+    // Rename functions by address (used after IL2CPP dump). Only renames
+    // functions whose current name starts with "FUN_" or "sub_" (unnamed).
+    // Pass overwrite=true to rename all matched addresses regardless of current name.
+    bool update_function_names_bulk(
+        int64_t binary_id,
+        const std::unordered_map<uint64_t, std::string>& addr_to_name,
+        bool overwrite = false);
 
     std::string last_error() const { return last_error_; }
 

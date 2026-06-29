@@ -6,4 +6,6 @@
     <string name="search_hint">Search…</string>
     <string name="xrefs">XRefs</string>
     <string name="symbols">Symbols</string>
+    <string name="select_target_type">Select Target Type</string>
+    <string name="unity_loader_title">Unity Loader</string>
 </resources>

@@ -219,6 +219,7 @@ add_library(peek_native SHARED
     jni_annotator.cpp
     algo_detector.cpp
     crash_handler.cpp
+    il2cpp_metadata.cpp
     peek_jni.cpp
 )
 

@@ -402,7 +402,8 @@ class AnalysisActivity : AppCompatActivity() {
     }
 
     companion object {
-        const val EXTRA_NAME = "binary_name"
+        const val EXTRA_NAME     = "binary_name"
+        const val EXTRA_IS_UNITY = "is_unity"
 
         private const val MENU_DOWNLOAD     = 1002
         private const val MENU_VIEW_OPTIONS = 1001

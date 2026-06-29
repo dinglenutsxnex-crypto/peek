@@ -490,3 +490,35 @@ bool AnalysisDb::has_signature(int64_t binary_id, uint64_t address) {
     sqlite3_finalize(stmt);
     return found;
 }
+
+bool AnalysisDb::update_function_names_bulk(
+    int64_t binary_id,
+    const std::unordered_map<uint64_t, std::string>& addr_to_name,
+    bool overwrite)
+{
+    if (!db_ || addr_to_name.empty()) return false;
+
+    sqlite3_stmt* stmt = nullptr;
+    // Only rename functions that are still auto-named (FUN_/sub_) unless overwrite requested
+    const char* sql_cond = overwrite
+        ? "UPDATE functions SET name=? WHERE binary_id=? AND address=?"
+        : "UPDATE functions SET name=? WHERE binary_id=? AND address=? "
+          "AND (name LIKE 'FUN_%' OR name LIKE 'sub_%' OR name LIKE 'loc_%')";
+
+    if (sqlite3_prepare_v2(db_, sql_cond, -1, &stmt, nullptr) != SQLITE_OK) {
+        last_error_ = sqlite3_errmsg(db_);
+        return false;
+    }
+
+    exec("BEGIN");
+    for (auto& [addr, name] : addr_to_name) {
+        sqlite3_reset(stmt);
+        sqlite3_bind_text (stmt, 1, name.c_str(), -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 2, binary_id);
+        sqlite3_bind_int64(stmt, 3, (int64_t)addr);
+        sqlite3_step(stmt);
+    }
+    exec("COMMIT");
+    sqlite3_finalize(stmt);
+    return true;
+}

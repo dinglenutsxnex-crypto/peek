@@ -25,12 +25,14 @@
 #include "db_cache.h"
 #include "decompiler_bridge.h"
 #include "jni_annotator.h"
+#include "il2cpp_metadata.h"
 
 #include <jni.h>
 #include <android/log.h>
 
 #include <algorithm>
 #include <cctype>
+#include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <map>
@@ -101,6 +103,10 @@ struct AnalysisContext {
     // the Ghidra scope before followFlow on every decompile call.
     std::vector<FuncSignature> sig_cache;
     bool                     sigs_loaded = false;
+
+    // Set when the binary was opened via the Unity path (IL2CPP dump).
+    bool                     is_unity    = false;
+    std::string              il2cpp_log;   // diagnostic log from il2cpp_dump()
 };
 
 static std::string jstr(JNIEnv* env, jstring s) {
@@ -2599,3 +2605,153 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
 }
 
 } // extern "C"
+
+// ============================================================
+// IL2CPP / Unity binary JNI entry points
+// ============================================================
+
+// Read an entire file into a vector<uint8_t>. Returns empty vector on failure.
+static std::vector<uint8_t> read_file_bytes(const std::string& path) {
+    FILE* f = fopen(path.c_str(), "rb");
+    if (!f) return {};
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    if (sz <= 0) { fclose(f); return {}; }
+    std::vector<uint8_t> buf((size_t)sz);
+    size_t got = fread(buf.data(), 1, (size_t)sz, f);
+    fclose(f);
+    if (got != (size_t)sz) return {};
+    return buf;
+}
+
+extern "C" {
+
+// -------------------------------------------------------
+// nativeOpenUnityBinary
+// -------------------------------------------------------
+// Runs the standard analysis pipeline on the il2cpp.so,
+// then parses global-metadata.dat and applies IL2CPP names
+// to all matched functions.
+// Returns a handle (same type as nativeOpenBinary) or 0.
+JNIEXPORT jlong JNICALL
+Java_com_nex_peek_PeekNative_nativeOpenUnityBinary(
+    JNIEnv* env, jobject,
+    jstring j_so_path,
+    jstring j_meta_path,
+    jstring j_db_dir)
+{
+    std::string so_path   = jstr(env, j_so_path);
+    std::string meta_path = jstr(env, j_meta_path);
+    std::string db_dir    = jstr(env, j_db_dir);
+
+    auto* ctx = new AnalysisContext();
+    ctx->is_unity  = true;
+    ctx->file_path = so_path;
+    ctx->tmp_dir   = db_dir;
+
+    // --- DB setup (mirrors nativeOpenBinary logic) ---
+    std::string hash = sha256_file(so_path);
+    ctx->file_hash = hash;
+
+    std::string db_path = db_dir + "/peek_cache.db";
+    ctx->db = std::make_unique<AnalysisDb>(db_path);
+    if (!ctx->db->open()) {
+        ctx->last_error = "DB open failed: " + ctx->db->last_error();
+        LOGE("Unity: %s", ctx->last_error.c_str());
+        return reinterpret_cast<jlong>(ctx);
+    }
+
+    // Check cache first
+    int64_t cached_id = ctx->db->find_binary(hash);
+    if (cached_id >= 0) {
+        ctx->binary_id = cached_id;
+        LOGI("Unity: loaded from cache binary_id=%lld", (long long)cached_id);
+        // Re-apply IL2CPP names even from cache (metadata may have changed)
+    } else {
+        if (!run_analysis(*ctx)) {
+            LOGE("Unity: run_analysis failed: %s", ctx->last_error.c_str());
+            return reinterpret_cast<jlong>(ctx);
+        }
+    }
+
+    // --- Read files for IL2CPP dump ---
+    std::vector<uint8_t> so_buf   = read_file_bytes(so_path);
+    std::vector<uint8_t> meta_buf = read_file_bytes(meta_path);
+
+    if (so_buf.empty()) {
+        ctx->il2cpp_log = "ERROR: failed to read il2cpp.so\n";
+        LOGE("Unity: failed to read so");
+        return reinterpret_cast<jlong>(ctx);
+    }
+    if (meta_buf.empty()) {
+        ctx->il2cpp_log = "ERROR: failed to read global-metadata.dat\n";
+        LOGE("Unity: failed to read metadata");
+        return reinterpret_cast<jlong>(ctx);
+    }
+
+    LOGI("Unity: running il2cpp_dump (so=%zu bytes, meta=%zu bytes)",
+         so_buf.size(), meta_buf.size());
+
+    Il2CppDumpResult dump = il2cpp_dump(
+        so_buf.data(),   so_buf.size(),
+        meta_buf.data(), meta_buf.size());
+
+    ctx->il2cpp_log  = dump.log;
+    ctx->il2cpp_log += dump.success ? "" : ("\nERROR: " + dump.error);
+
+    if (!dump.success) {
+        LOGE("Unity: il2cpp_dump failed: %s", dump.error.c_str());
+        return reinterpret_cast<jlong>(ctx);
+    }
+
+    LOGI("Unity: il2cpp_dump returned %zu symbols", dump.methods.size());
+
+    // --- Apply names ---
+    // 1. Build addr→name map
+    std::unordered_map<uint64_t, std::string> name_map;
+    std::vector<FuncSignature>                sigs;
+    name_map.reserve(dump.methods.size());
+    sigs.reserve(dump.methods.size());
+
+    for (auto& sym : dump.methods) {
+        name_map[sym.address] = sym.name;
+
+        FuncSignature sig;
+        sig.address = sym.address;
+        sig.name    = sym.name;
+        sig.source  = "il2cpp";
+        sigs.push_back(sig);
+    }
+
+    // 2. Rename functions table entries
+    ctx->db->update_function_names_bulk(ctx->binary_id, name_map, /*overwrite=*/false);
+
+    // 3. Store as signatures (for decompiler name resolution)
+    ctx->db->store_signatures(ctx->binary_id, sigs);
+
+    ctx->il2cpp_log += "\nApplied " + std::to_string(dump.methods.size()) + " IL2CPP names.\n";
+    LOGI("Unity: applied %zu names", dump.methods.size());
+
+    return reinterpret_cast<jlong>(ctx);
+}
+
+// Returns the IL2CPP dump diagnostic log for the given handle.
+JNIEXPORT jstring JNICALL
+Java_com_nex_peek_PeekNative_nativeGetIl2CppLog(JNIEnv* env, jobject, jlong handle)
+{
+    if (handle == 0) return env->NewStringUTF("");
+    auto* ctx = reinterpret_cast<AnalysisContext*>(handle);
+    return env->NewStringUTF(ctx->il2cpp_log.c_str());
+}
+
+// Returns 1 if the binary opened at this handle is a Unity IL2CPP binary.
+JNIEXPORT jboolean JNICALL
+Java_com_nex_peek_PeekNative_nativeIsUnityBinary(JNIEnv* env, jobject, jlong handle)
+{
+    if (handle == 0) return JNI_FALSE;
+    auto* ctx = reinterpret_cast<AnalysisContext*>(handle);
+    return ctx->is_unity ? JNI_TRUE : JNI_FALSE;
+}
+
+} // extern "C" (Unity block)

@@ -5,8 +5,10 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.OpenableColumns
+import android.view.LayoutInflater
 import android.view.View
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowCompat
@@ -14,6 +16,7 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
+import com.google.android.material.card.MaterialCardView
 import com.nex.peek.databinding.ActivityMainBinding
 import com.nex.peek.ui.AnalysisSession
 import kotlinx.coroutines.Dispatchers
@@ -62,9 +65,40 @@ class MainActivity : AppCompatActivity() {
         }
 
         b.btnOpen.setOnClickListener {
-            filePicker.launch(arrayOf("application/octet-stream", "*/*"))
+            showTargetTypeDialog()
         }
     }
+
+    // -----------------------------------------------------------------------
+    // Target type selection dialog
+    // -----------------------------------------------------------------------
+
+    private fun showTargetTypeDialog() {
+        val dialogView = LayoutInflater.from(this)
+            .inflate(R.layout.dialog_target_type, null)
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(dialogView)
+            .create()
+
+        dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
+
+        dialogView.findViewById<MaterialCardView>(R.id.cardUnity).setOnClickListener {
+            dialog.dismiss()
+            startActivity(Intent(this, UnityLoaderActivity::class.java))
+        }
+
+        dialogView.findViewById<MaterialCardView>(R.id.cardStandard).setOnClickListener {
+            dialog.dismiss()
+            filePicker.launch(arrayOf("application/octet-stream", "*/*"))
+        }
+
+        dialog.show()
+    }
+
+    // -----------------------------------------------------------------------
+    // Standard binary loading
+    // -----------------------------------------------------------------------
 
     private fun openBinary(uri: Uri) {
         b.progressBar.visibility = View.VISIBLE
@@ -182,11 +216,10 @@ class MainActivity : AppCompatActivity() {
             android.widget.Toast.LENGTH_LONG
         ).show()
 
-        androidx.appcompat.app.AlertDialog.Builder(this)
+        AlertDialog.Builder(this)
             .setTitle("Last run crashed")
             .setMessage(reason)
             .setPositiveButton("OK", null)
             .show()
     }
 }
-
