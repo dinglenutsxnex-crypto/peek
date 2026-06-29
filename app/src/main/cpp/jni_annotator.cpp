@@ -5,6 +5,7 @@
 #include <cstdlib>   // strtoull, atoi
 #include <cstring>   // strlen
 #include <map>
+#include <set>
 #include <sstream>
 #include <unordered_map>
 #include <vector>
@@ -1592,8 +1593,27 @@ static bool is_bare_close(const std::string& line, const std::string& indent) {
 }
 
 static std::string collapse_atomic_refcount(const std::string& code) {
-    if (code.find("pthread_create == 0") == std::string::npos) return code;
-    if (code.find("ExclusiveMonitorPass")  == std::string::npos) return code;
+    if (code.find("ExclusiveMonitorPass") == std::string::npos) return code;
+    if (code.find("pthread_create") == std::string::npos) return code;
+
+    // Build a set of variable names that are assigned from pthread_create.
+    // Matches lines of the form:  <var> = pthread_create;
+    // These are used as hoisted guards: if (<var> == 0) { simple } else { atomic }
+    std::set<std::string> pthread_vars;
+    pthread_vars.insert("pthread_create"); // the direct form is always in scope
+    {
+        const std::string needle = " = pthread_create;";
+        size_t pos = 0;
+        while ((pos = code.find(needle, pos)) != std::string::npos) {
+            size_t end = pos;
+            while (end > 0 && is_id(code[end - 1])) --end;
+            if (end < pos) {
+                std::string var(code, end, pos - end);
+                if (!var.empty()) pthread_vars.insert(var);
+            }
+            pos += needle.size();
+        }
+    }
 
     std::vector<std::string> lines = split_lines(code);
     std::vector<std::string> out;
@@ -1601,8 +1621,14 @@ static std::string collapse_atomic_refcount(const std::string& code) {
 
     size_t i = 0;
     while (i < lines.size()) {
-        // ---- Find the sentinel ----
-        size_t p = lines[i].find("if (pthread_create == 0)");
+        // ---- Find the sentinel: if (<pthread_var> == 0) ----
+        size_t p = std::string::npos;
+        for (const auto& pv : pthread_vars) {
+            std::string sentinel = "if (" + pv + " == 0)";
+            size_t f = lines[i].find(sentinel);
+            if (f != std::string::npos && (p == std::string::npos || f < p))
+                p = f;
+        }
         if (p == std::string::npos) { out.push_back(lines[i++]); continue; }
 
         // Indentation of the 'if' keyword itself.
@@ -1729,8 +1755,24 @@ static std::string collapse_atomic_refcount(const std::string& code) {
 //   INDENT *ptr = val OP x;
 // ---------------------------------------------------------------------------
 static std::string collapse_inverted_atomic(const std::string& code) {
-    if (code.find("pthread_create != 0") == std::string::npos) return code;
-    if (code.find("ExclusiveMonitorPass")  == std::string::npos) return code;
+    if (code.find("ExclusiveMonitorPass") == std::string::npos) return code;
+    if (code.find("pthread_create") == std::string::npos) return code;
+
+    std::set<std::string> pthread_vars;
+    pthread_vars.insert("pthread_create");
+    {
+        const std::string needle = " = pthread_create;";
+        size_t pos = 0;
+        while ((pos = code.find(needle, pos)) != std::string::npos) {
+            size_t end = pos;
+            while (end > 0 && is_id(code[end - 1])) --end;
+            if (end < pos) {
+                std::string var(code, end, pos - end);
+                if (!var.empty()) pthread_vars.insert(var);
+            }
+            pos += needle.size();
+        }
+    }
 
     std::vector<std::string> lines = split_lines(code);
     std::vector<std::string> out;
@@ -1738,7 +1780,13 @@ static std::string collapse_inverted_atomic(const std::string& code) {
 
     size_t i = 0;
     while (i < lines.size()) {
-        size_t p = lines[i].find("if (pthread_create != 0)");
+        size_t p = std::string::npos;
+        for (const auto& pv : pthread_vars) {
+            std::string sentinel = "if (" + pv + " != 0)";
+            size_t f = lines[i].find(sentinel);
+            if (f != std::string::npos && (p == std::string::npos || f < p))
+                p = f;
+        }
         if (p == std::string::npos) { out.push_back(lines[i++]); continue; }
 
         std::string base_indent(lines[i].begin(), lines[i].begin() + p);
@@ -2624,7 +2672,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V26\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V27\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
