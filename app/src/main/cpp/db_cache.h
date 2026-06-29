@@ -62,6 +62,15 @@ struct FuncSignature {
     std::string source;       // "symbol" / "stdlib" / "il2cpp" / "inferred"
 };
 
+// Lightweight record for the home-screen recent-projects list.
+struct DbBinaryInfo {
+    int64_t     id             = -1;
+    std::string file_path;
+    std::string file_hash;
+    int64_t     last_analyzed  = 0;   // Unix timestamp
+    int64_t     function_count = 0;
+};
+
 // ---------------------------------------------------------------------------
 // Cache DB
 // ---------------------------------------------------------------------------
@@ -138,6 +147,9 @@ public:
         int64_t binary_id,
         const std::unordered_map<uint64_t, std::string>& addr_to_name,
         bool overwrite = false);
+
+    // List recently analyzed binaries, newest first.
+    std::vector<DbBinaryInfo> list_recent_binaries(int limit = 20);
 
     std::string last_error() const { return last_error_; }
 

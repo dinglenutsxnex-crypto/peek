@@ -187,4 +187,38 @@ object PeekNative {
         soPath: String, metaPath: String, dbDir: String): Long
     @JvmStatic private external fun nativeGetIl2CppLog(handle: Long): String
     @JvmStatic private external fun nativeIsUnityBinary(handle: Long): Boolean
+
+    // -----------------------------------------------------------------------
+    // Recent projects list
+    // -----------------------------------------------------------------------
+
+    data class BinaryInfo(
+        val id: Long,
+        val path: String,
+        val funcCount: Int,
+        val timestamp: Long
+    ) {
+        val name: String get() = java.io.File(path).name
+    }
+
+    /**
+     * Lists previously analyzed binaries from the cache DB, newest first.
+     * Returns an empty list if the DB is not yet created.
+     */
+    fun listBinaries(dbDir: String): List<BinaryInfo> {
+        val raw = nativeListBinaries(dbDir)
+        if (raw.isBlank()) return emptyList()
+        return raw.trim().split('\n').mapNotNull { line ->
+            val p = line.split('\t')
+            if (p.size < 4) null
+            else BinaryInfo(
+                id        = p[0].toLongOrNull() ?: return@mapNotNull null,
+                path      = p[1],
+                funcCount = p[2].toIntOrNull() ?: 0,
+                timestamp = p[3].toLongOrNull() ?: 0L
+            )
+        }
+    }
+
+    @JvmStatic private external fun nativeListBinaries(dbDir: String): String
 }

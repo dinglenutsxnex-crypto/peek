@@ -164,7 +164,8 @@ class UnityLoaderActivity : AppCompatActivity() {
 
     private fun copyToCache(uri: Uri, name: String): String? {
         return try {
-            val dest = File(cacheDir, "unity_$name")
+            val dir = File(filesDir, "binaries").also { it.mkdirs() }
+            val dest = File(dir, name)
             contentResolver.openInputStream(uri)?.use { input ->
                 FileOutputStream(dest).use { out -> input.copyTo(out) }
             }

@@ -522,3 +522,32 @@ bool AnalysisDb::update_function_names_bulk(
     sqlite3_finalize(stmt);
     return true;
 }
+
+std::vector<DbBinaryInfo> AnalysisDb::list_recent_binaries(int limit) {
+    std::vector<DbBinaryInfo> result;
+    if (!db_) return result;
+    const char* sql =
+        "SELECT b.id, b.file_path, b.file_hash, b.last_analyzed_timestamp, "
+        "COUNT(f.id) "
+        "FROM binaries b "
+        "LEFT JOIN functions f ON f.binary_id = b.id "
+        "GROUP BY b.id "
+        "ORDER BY b.last_analyzed_timestamp DESC "
+        "LIMIT ?";
+    sqlite3_stmt* stmt = nullptr;
+    if (sqlite3_prepare_v2(db_, sql, -1, &stmt, nullptr) != SQLITE_OK) return result;
+    sqlite3_bind_int(stmt, 1, limit);
+    while (sqlite3_step(stmt) == SQLITE_ROW) {
+        DbBinaryInfo info;
+        info.id = sqlite3_column_int64(stmt, 0);
+        const char* path = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 1));
+        info.file_path = path ? path : "";
+        const char* hash = reinterpret_cast<const char*>(sqlite3_column_text(stmt, 2));
+        info.file_hash = hash ? hash : "";
+        info.last_analyzed  = sqlite3_column_int64(stmt, 3);
+        info.function_count = sqlite3_column_int64(stmt, 4);
+        result.push_back(std::move(info));
+    }
+    sqlite3_finalize(stmt);
+    return result;
+}

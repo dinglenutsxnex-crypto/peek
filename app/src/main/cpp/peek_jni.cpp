@@ -2755,3 +2755,32 @@ Java_com_nex_peek_PeekNative_nativeIsUnityBinary(JNIEnv* env, jobject, jlong han
 }
 
 } // extern "C" (Unity block)
+
+// ============================================================
+// nativeListBinaries — returns recent analyses for home screen
+// ============================================================
+extern "C" {
+
+JNIEXPORT jstring JNICALL
+Java_com_nex_peek_PeekNative_nativeListBinaries(JNIEnv* env, jobject, jstring j_db_dir)
+{
+    const char* raw = env->GetStringUTFChars(j_db_dir, nullptr);
+    std::string db_dir(raw ? raw : "");
+    env->ReleaseStringUTFChars(j_db_dir, raw);
+
+    AnalysisDb db(db_dir + "/peek_cache.db");
+    if (!db.open()) return env->NewStringUTF("");
+
+    auto list = db.list_recent_binaries(20);
+    std::string out;
+    out.reserve(list.size() * 80);
+    for (auto& info : list) {
+        out += std::to_string(info.id)             + "\t";
+        out += info.file_path                       + "\t";
+        out += std::to_string(info.function_count)  + "\t";
+        out += std::to_string(info.last_analyzed)   + "\n";
+    }
+    return env->NewStringUTF(out.c_str());
+}
+
+} // extern "C" (listBinaries block)

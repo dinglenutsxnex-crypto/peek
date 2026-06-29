@@ -16,7 +16,9 @@ import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.core.view.updatePadding
 import androidx.lifecycle.lifecycleScope
+import androidx.recyclerview.widget.LinearLayoutManager
 import com.google.android.material.card.MaterialCardView
+import com.nex.peek.adapter.RecentProjectsAdapter
 import com.nex.peek.databinding.ActivityMainBinding
 import com.nex.peek.ui.AnalysisSession
 import kotlinx.coroutines.Dispatchers
@@ -28,6 +30,7 @@ import java.io.FileOutputStream
 class MainActivity : AppCompatActivity() {
 
     private lateinit var b: ActivityMainBinding
+    private lateinit var recentAdapter: RecentProjectsAdapter
 
     private val filePicker = registerForActivityResult(
         ActivityResultContracts.OpenDocument()
@@ -64,8 +67,62 @@ class MainActivity : AppCompatActivity() {
             PeekNative.initDecompiler(specDir)
         }
 
+        recentAdapter = RecentProjectsAdapter { info ->
+            reopenCachedBinary(info)
+        }
+        b.rvRecent.layoutManager = LinearLayoutManager(this)
+        b.rvRecent.adapter = recentAdapter
+
         b.btnOpen.setOnClickListener {
             showTargetTypeDialog()
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        loadRecentProjects()
+    }
+
+    private fun loadRecentProjects() {
+        lifecycleScope.launch {
+            val list = withContext(Dispatchers.IO) {
+                PeekNative.listBinaries(filesDir.absolutePath)
+            }
+            recentAdapter.submitList(list)
+            b.tvEmpty.visibility = if (list.isEmpty()) View.VISIBLE else View.GONE
+        }
+    }
+
+    private fun reopenCachedBinary(info: PeekNative.BinaryInfo) {
+        val file = File(info.path)
+        if (!file.exists()) {
+            android.widget.Toast.makeText(this, "File not found: ${info.name}", android.widget.Toast.LENGTH_SHORT).show()
+            return
+        }
+
+        b.progressBar.visibility = View.VISIBLE
+        b.tvStatus.text = "Loading…"
+        b.btnOpen.isEnabled = false
+
+        lifecycleScope.launch {
+            val handle = withContext(Dispatchers.IO) {
+                PeekNative.openBinary(info.path, filesDir.absolutePath)
+            }
+
+            b.progressBar.visibility = View.GONE
+            b.btnOpen.isEnabled = true
+
+            if (handle == 0L) {
+                b.tvStatus.text = "Failed to reload."
+                return@launch
+            }
+
+            AnalysisSession.set(handle)
+            startActivity(
+                Intent(this@MainActivity, AnalysisActivity::class.java)
+                    .putExtra(AnalysisActivity.EXTRA_NAME, info.name)
+            )
+            b.tvStatus.text = ""
         }
     }
 
@@ -106,9 +163,8 @@ class MainActivity : AppCompatActivity() {
         b.btnOpen.isEnabled = false
 
         lifecycleScope.launch {
-            val (path, name) = withContext(Dispatchers.IO) {
-                copyToCache(uri) to (queryFileName(uri) ?: "binary.so")
-            }
+            val name = queryFileName(uri) ?: "binary.so"
+            val path = withContext(Dispatchers.IO) { copyToStorage(uri, name) }
 
             if (path == null) {
                 b.progressBar.visibility = View.GONE
@@ -140,6 +196,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     /**
+     * Copies the picked file to filesDir/binaries/ so it persists across
+     * Android low-storage cacheDir purges.
+     */
+    private fun copyToStorage(uri: Uri, name: String): String? {
+        return try {
+            val dir = File(filesDir, "binaries").also { it.mkdirs() }
+            val dest = File(dir, name)
+            contentResolver.openInputStream(uri)?.use { input ->
+                FileOutputStream(dest).use { output -> input.copyTo(output) }
+            }
+            dest.absolutePath
+        } catch (_: Exception) { null }
+    }
+
+    /**
      * Extracts decompiler SLEIGH spec assets to filesDir/decompiler_spec/ on
      * first run (skips files that already exist).  Returns the directory path.
      */
@@ -160,17 +231,6 @@ class MainActivity : AppCompatActivity() {
         return dir.absolutePath
     }
 
-    private fun copyToCache(uri: Uri): String? {
-        return try {
-            val name = queryFileName(uri) ?: "binary.so"
-            val dest = File(cacheDir, name)
-            contentResolver.openInputStream(uri)?.use { input ->
-                FileOutputStream(dest).use { output -> input.copyTo(output) }
-            }
-            dest.absolutePath
-        } catch (e: Exception) { null }
-    }
-
     private fun queryFileName(uri: Uri): String? {
         return contentResolver.query(uri, null, null, null, null)?.use { cursor ->
             val col = cursor.getColumnIndex(OpenableColumns.DISPLAY_NAME)
@@ -183,10 +243,9 @@ class MainActivity : AppCompatActivity() {
      * PeekApplication's uncaught-exception handler, or a real native
      * SIGSEGV/SIGABRT caught by the signal handler in crash_handler.cpp),
      * a reason was written to this file just before death. Show it now —
-     * a Toast first (so it's visible without any interaction), and tap the
-     * Toast's anchor area isn't possible, so we also offer the full text
-     * via a dialog since native crash messages can be longer than a Toast
-     * comfortably displays. Then delete the file so it isn't shown again.
+     * a Toast first (so it's visible without any interaction), then a dialog
+     * since native crash messages can be longer than a Toast comfortably displays.
+     * Then delete the file so it isn't shown again.
      */
     private fun showPendingCrashIfAny() {
         val crashFile = File(filesDir, PeekApplication.CRASH_FILE_NAME)

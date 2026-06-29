@@ -8,4 +8,6 @@
     <string name="symbols">Symbols</string>
     <string name="select_target_type">Select Target Type</string>
     <string name="unity_loader_title">Unity Loader</string>
+    <string name="recent_header">Recent</string>
+    <string name="no_recent">No analyses yet — open a .so file to begin.</string>
 </resources>

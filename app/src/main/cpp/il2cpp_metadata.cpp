@@ -283,13 +283,33 @@ static bool parse_typedef(const uint8_t* base, size_t buf_size,
 // IL2CPP CodeRegistration structures (ARM64, 64-bit pointers)
 // ---------------------------------------------------------------------------
 
-// v27+
+// v27–28
 #pragma pack(push, 1)
 struct CodeReg_v27 {
     uint64_t reversePInvokeWrapperCount;
     uint64_t reversePInvokeWrappers;
     uint64_t genericMethodPointersCount;
     uint64_t genericMethodPointers;
+    uint64_t invokerPointersCount;
+    uint64_t invokerPointers;
+    uint64_t unresolvedVirtualCallCount;
+    uint64_t unresolvedVirtualCallPointers;
+    uint64_t interopDataCount;
+    uint64_t interopData;
+    uint64_t windowsRuntimeFactoryCount;
+    uint64_t windowsRuntimeFactoryTable;
+    uint64_t codeGenModulesCount;
+    uint64_t codeGenModules;
+};
+
+// v29+ adds genericAdjustorThunk pair before invokerPointers
+struct CodeReg_v29 {
+    uint64_t reversePInvokeWrapperCount;
+    uint64_t reversePInvokeWrappers;
+    uint64_t genericMethodPointersCount;
+    uint64_t genericMethodPointers;
+    uint64_t genericAdjustorThunkCount;
+    uint64_t genericAdjustorThunks;
     uint64_t invokerPointersCount;
     uint64_t invokerPointers;
     uint64_t unresolvedVirtualCallCount;
@@ -423,9 +443,9 @@ Il2CppDumpResult il2cpp_dump(
     res.metadata_version = meta_ver;
     log << "Metadata version: " << meta_ver << "\n";
 
-    if (meta_ver < 24 || meta_ver > 31) {
+    if (meta_ver < 24 || meta_ver > 45) {
         res.error = "Unsupported metadata version " + std::to_string(meta_ver) +
-                    " (supported: 24–31)";
+                    " (supported: 24–45)";
         return res;
     }
 
@@ -639,26 +659,48 @@ Il2CppDumpResult il2cpp_dump(
             }
         }
 
-        // Scan for CodeRegistration (v27+): codeGenModulesCount should be small (1-50)
+        // Scan for CodeRegistration (v27+): codeGenModulesCount should be small (1-100)
+        // v29+ has two extra fields (genericAdjustorThunk pair) before invokerPointers
         if (!va_codereg && meta_ver >= 27) {
             for (auto& seg : load_segs) {
                 uint64_t end = seg.fend > so_size ? so_size : seg.fend;
-                for (uint64_t off = seg.foff; off + sizeof(CodeReg_v27) <= end; off += 8) {
-                    CodeReg_v27 cr;
-                    if (!so.read(off, cr)) break;
-                    if (cr.codeGenModulesCount >= 1 && cr.codeGenModulesCount <= 100 &&
-                        cr.genericMethodPointersCount > 0 && cr.genericMethodPointersCount < 500000 &&
-                        in_any_seg(cr.codeGenModules) &&
-                        in_any_seg(cr.genericMethodPointers)) {
-                        for (auto& s : load_segs) {
-                            if (off >= s.foff && off < s.fend) {
-                                va_codereg = s.vaddr + (off - s.foff);
-                                log << "CodeRegistration found by scan at 0x"
-                                    << std::hex << va_codereg << std::dec << "\n";
-                                break;
+                if (meta_ver >= 29) {
+                    for (uint64_t off = seg.foff; off + sizeof(CodeReg_v29) <= end; off += 8) {
+                        CodeReg_v29 cr;
+                        if (!so.read(off, cr)) break;
+                        if (cr.codeGenModulesCount >= 1 && cr.codeGenModulesCount <= 100 &&
+                            cr.genericMethodPointersCount > 0 && cr.genericMethodPointersCount < 500000 &&
+                            in_any_seg(cr.codeGenModules) &&
+                            in_any_seg(cr.genericMethodPointers)) {
+                            for (auto& s : load_segs) {
+                                if (off >= s.foff && off < s.fend) {
+                                    va_codereg = s.vaddr + (off - s.foff);
+                                    log << "CodeRegistration found by scan at 0x"
+                                        << std::hex << va_codereg << std::dec << "\n";
+                                    break;
+                                }
                             }
+                            if (va_codereg) break;
                         }
-                        if (va_codereg) break;
+                    }
+                } else {
+                    for (uint64_t off = seg.foff; off + sizeof(CodeReg_v27) <= end; off += 8) {
+                        CodeReg_v27 cr;
+                        if (!so.read(off, cr)) break;
+                        if (cr.codeGenModulesCount >= 1 && cr.codeGenModulesCount <= 100 &&
+                            cr.genericMethodPointersCount > 0 && cr.genericMethodPointersCount < 500000 &&
+                            in_any_seg(cr.codeGenModules) &&
+                            in_any_seg(cr.genericMethodPointers)) {
+                            for (auto& s : load_segs) {
+                                if (off >= s.foff && off < s.fend) {
+                                    va_codereg = s.vaddr + (off - s.foff);
+                                    log << "CodeRegistration found by scan at 0x"
+                                        << std::hex << va_codereg << std::dec << "\n";
+                                    break;
+                                }
+                            }
+                            if (va_codereg) break;
+                        }
                     }
                 }
                 if (va_codereg) break;
@@ -680,7 +722,16 @@ Il2CppDumpResult il2cpp_dump(
     uint64_t codegenmodules_va = 0;
     uint64_t codegenmodules_count = 0;
 
-    if (meta_ver >= 27) {
+    if (meta_ver >= 29) {
+        CodeReg_v29 cr;
+        if (!read_va(so, load_segs, va_codereg, cr)) {
+            res.error = "Could not read CodeRegistration struct";
+            res.log = log.str();
+            return res;
+        }
+        codegenmodules_va    = cr.codeGenModules;
+        codegenmodules_count = cr.codeGenModulesCount;
+    } else if (meta_ver >= 27) {
         CodeReg_v27 cr;
         if (!read_va(so, load_segs, va_codereg, cr)) {
             res.error = "Could not read CodeRegistration struct";
