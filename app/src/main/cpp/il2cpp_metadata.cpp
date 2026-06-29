@@ -659,52 +659,87 @@ Il2CppDumpResult il2cpp_dump(
             }
         }
 
-        // Scan for CodeRegistration (v27+): codeGenModulesCount should be small (1-100)
-        // v29+ has two extra fields (genericAdjustorThunk pair) before invokerPointers
+        // Deep validation: after finding a candidate CodeRegistration, follow its
+        // codeGenModules pointer array and verify the first two module structs have:
+        //   - a non-null name pointer that lies inside a LOAD segment
+        //   - a methodPointerCount that is sane (< 1 million)
+        //   - if methodPointerCount > 0, a methodPointers ptr inside a LOAD segment
+        // This rejects false positives where all modules show 0 methods / empty names.
+        auto validate_modules = [&](uint64_t modules_va, uint64_t count) -> bool {
+            if (!in_any_seg(modules_va)) return false;
+            // Check first min(count, 3) modules
+            uint64_t check_n = count < 3 ? count : 3;
+            int valid = 0;
+            for (uint64_t i = 0; i < check_n; ++i) {
+                uint64_t mod_ptr = 0;
+                if (!read_va(so, load_segs, modules_va + i * 8, mod_ptr)) return false;
+                if (mod_ptr == 0 || !in_any_seg(mod_ptr)) return false;
+                uint64_t name_ptr = 0, meth_cnt = 0, meth_va = 0;
+                if (!read_va(so, load_segs, mod_ptr,      name_ptr)) return false;
+                if (!read_va(so, load_segs, mod_ptr + 8,  meth_cnt)) return false;
+                if (!read_va(so, load_segs, mod_ptr + 16, meth_va))  return false;
+                // name pointer must be in a segment
+                if (!in_any_seg(name_ptr)) return false;
+                // method count must be sane
+                if (meth_cnt > 500000) return false;
+                // if count > 0, the array pointer must also be valid
+                if (meth_cnt > 0 && !in_any_seg(meth_va)) return false;
+                ++valid;
+            }
+            return valid > 0;
+        };
+
+        // Scan for CodeRegistration (v27+): codeGenModulesCount should be small (1-200)
+        // After basic field checks pass, run deep module validation to reject false positives.
         if (!va_codereg && meta_ver >= 27) {
+            int cr_rejected = 0;
             for (auto& seg : load_segs) {
                 uint64_t end = seg.fend > so_size ? so_size : seg.fend;
                 if (meta_ver >= 29) {
                     for (uint64_t off = seg.foff; off + sizeof(CodeReg_v29) <= end; off += 8) {
                         CodeReg_v29 cr;
                         if (!so.read(off, cr)) break;
-                        if (cr.codeGenModulesCount >= 1 && cr.codeGenModulesCount <= 100 &&
-                            cr.genericMethodPointersCount > 0 && cr.genericMethodPointersCount < 500000 &&
-                            in_any_seg(cr.codeGenModules) &&
-                            in_any_seg(cr.genericMethodPointers)) {
-                            for (auto& s : load_segs) {
-                                if (off >= s.foff && off < s.fend) {
-                                    va_codereg = s.vaddr + (off - s.foff);
-                                    log << "CodeRegistration found by scan at 0x"
-                                        << std::hex << va_codereg << std::dec << "\n";
-                                    break;
-                                }
-                            }
-                            if (va_codereg) break;
+                        if (cr.codeGenModulesCount < 1 || cr.codeGenModulesCount > 200) continue;
+                        if (!in_any_seg(cr.codeGenModules)) continue;
+                        if (!validate_modules(cr.codeGenModules, cr.codeGenModulesCount)) {
+                            ++cr_rejected; continue;
                         }
+                        for (auto& s : load_segs) {
+                            if (off >= s.foff && off < s.fend) {
+                                va_codereg = s.vaddr + (off - s.foff);
+                                log << "CodeRegistration found by scan at 0x"
+                                    << std::hex << va_codereg << std::dec
+                                    << " (rejected " << std::dec << cr_rejected << " false positives)\n";
+                                break;
+                            }
+                        }
+                        if (va_codereg) break;
                     }
                 } else {
                     for (uint64_t off = seg.foff; off + sizeof(CodeReg_v27) <= end; off += 8) {
                         CodeReg_v27 cr;
                         if (!so.read(off, cr)) break;
-                        if (cr.codeGenModulesCount >= 1 && cr.codeGenModulesCount <= 100 &&
-                            cr.genericMethodPointersCount > 0 && cr.genericMethodPointersCount < 500000 &&
-                            in_any_seg(cr.codeGenModules) &&
-                            in_any_seg(cr.genericMethodPointers)) {
-                            for (auto& s : load_segs) {
-                                if (off >= s.foff && off < s.fend) {
-                                    va_codereg = s.vaddr + (off - s.foff);
-                                    log << "CodeRegistration found by scan at 0x"
-                                        << std::hex << va_codereg << std::dec << "\n";
-                                    break;
-                                }
-                            }
-                            if (va_codereg) break;
+                        if (cr.codeGenModulesCount < 1 || cr.codeGenModulesCount > 200) continue;
+                        if (!in_any_seg(cr.codeGenModules)) continue;
+                        if (!validate_modules(cr.codeGenModules, cr.codeGenModulesCount)) {
+                            ++cr_rejected; continue;
                         }
+                        for (auto& s : load_segs) {
+                            if (off >= s.foff && off < s.fend) {
+                                va_codereg = s.vaddr + (off - s.foff);
+                                log << "CodeRegistration found by scan at 0x"
+                                    << std::hex << va_codereg << std::dec
+                                    << " (rejected " << std::dec << cr_rejected << " false positives)\n";
+                                break;
+                            }
+                        }
+                        if (va_codereg) break;
                     }
                 }
                 if (va_codereg) break;
             }
+            if (!va_codereg && cr_rejected > 0)
+                log << "CodeReg scan: rejected " << cr_rejected << " false positive(s), none passed validation\n";
         }
     }
 
