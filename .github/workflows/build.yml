@@ -56,7 +56,7 @@ jobs:
               sys.exit(1)
           EOF
 
-          # Apply the RawLoadImage::adjustVma null-deref guard.
+          # Patch 1: RawLoadImage::adjustVma null-deref guard (loadimage.cc).
           # spaceid is null when adjustVma is called from buildLoader();
           # it is only assigned later in postSpecFile(). Without this guard
           # the decompiler crashes with SIGSEGV at 0x64 on any non-zero vma.
@@ -64,7 +64,17 @@ jobs:
             's/uint4 ws = spaceid->getWordSize();/uint4 ws = (spaceid != (AddrSpace *)0) ? spaceid->getWordSize() : 1;/' \
             app/src/main/cpp/decompiler/loadimage.cc
 
-          echo "Ghidra decompiler source ready."
+          # Patch 2: expose RawBinaryArchitecture::adjustvma (raw_arch.hh).
+          # In Ghidra 12.1.2, adjustvma is private (declared before public:).
+          # decompiler_bridge.cpp must set it to tell the decompiler what
+          # virtual address byte-0 of the raw function blob maps to.
+          # We surgically bracket it with public:/private: so only that
+          # one field is exposed; everything else stays private.
+          sed -i \
+            's/  long adjustvma;/  public: long adjustvma; private:/' \
+            app/src/main/cpp/decompiler/raw_arch.hh
+
+          echo "Ghidra decompiler source ready (2 patches applied)."
 
       - uses: gradle/actions/setup-gradle@v3
         with:

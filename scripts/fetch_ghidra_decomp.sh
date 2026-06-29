@@ -30,10 +30,19 @@ if extracted == 0:
     sys.exit(1)
 PYEOF
 
-echo "Applying adjustVma null-deref guard..."
+echo "Applying patches..."
+
+# Patch 1: RawLoadImage::adjustVma null-deref guard (loadimage.cc).
 sed -i \
   's/uint4 ws = spaceid->getWordSize();/uint4 ws = (spaceid != (AddrSpace *)0) ? spaceid->getWordSize() : 1;/' \
   "$DEST/loadimage.cc"
 
+# Patch 2: expose RawBinaryArchitecture::adjustvma (raw_arch.hh).
+# In Ghidra 12.1.2, adjustvma is private. Bracket it with public:/private:
+# so decompiler_bridge.cpp can set it without modifying the rest of the class.
+sed -i \
+  's/  long adjustvma;/  public: long adjustvma; private:/' \
+  "$DEST/raw_arch.hh"
+
 rm -f "$ZIP"
-echo "Done. Run ./gradlew assembleDebug to build."
+echo "Done (2 patches applied). Run ./gradlew assembleDebug to build."
