@@ -143,29 +143,88 @@ static void detect_ay_obfuscate(const std::string& code, std::vector<AlgoHit>& h
 }
 
 // Rolling XOR — key state mutates every iteration via rotation or feedback.
-// Strong signal: bit rotation (>> N | << M) combined with XOR in a loop.
-// Ghidra may emit hex shift amounts (>> 0x1b, << 0x1b) instead of decimal.
+// Strong signal: bit rotation (>> N | << M) combined with XOR in a loop,
+// AND the XOR must appear on a line that also writes to indexed memory.
+//
+// MD5 and SHA-1/256 both use left/right shifts + XOR in loops for their
+// round functions, so we must exclude them explicitly before checking
+// the rotation pattern to avoid false positives.
 static void detect_rolling_xor(const std::string& code, std::vector<AlgoHit>& hits) {
+    // Bail if MD5 T-table constants are present.
+    if (has(code, "0xd76aa478") || ihas(code, "0xd76aa478")) return;
+    if (has(code, "0xe8c7b756") || ihas(code, "0xe8c7b756")) return;
+    // Bail if SHA-256 round constants are present.
+    if (has(code, "0x428a2f98") || ihas(code, "0x428a2f98")) return;
+    if (has(code, "0x71374491") || ihas(code, "0x71374491")) return;
+    // Bail if SHA-1 init/round constants are present.
+    if (has(code, "0x67452301") || ihas(code, "0x67452301")) return;
+    if (has(code, "0x5a827999") || ihas(code, "0x5a827999")) return;
+    if (has(code, "0x6ed9eba1") || ihas(code, "0x6ed9eba1")) return;
+    // Bail if AES S-box constants are present.
+    if (has(code, "0x63") && has(code, "0x7c") && has(code, "0x77") && has(code, "0x7b")) return;
+
     bool has_loop = has(code, "do {") || has(code, "while (") || has(code, "for (");
     if (!has_loop) return;
-    // Bit rotation: (x >> N | x << M) or (x << N | x >> M)
-    // Match both decimal (>> 5) and hex (>> 0x1b) shift amounts
+
     bool has_right_shift = has(code, ">> ") || has(code, ">>");
     bool has_left_shift  = has(code, "<< ") || has(code, "<<");
-    bool has_rot = has_right_shift && has_left_shift;
-    if (!has_rot) return;
+    if (!has_right_shift || !has_left_shift) return;
     if (count_occurrences(code, "^") < 2) return;
+
+    // Require XOR on a line that also touches indexed memory.
+    // This distinguishes a cipher (XOR into buf[i]) from a hash
+    // round function (XOR between scalar working variables).
+    bool xor_on_indexed_line = false;
+    size_t line_start = 0;
+    while (line_start < code.size() && !xor_on_indexed_line) {
+        size_t line_end = code.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = code.size();
+        if (line_end > line_start) {
+            const std::string line(code.c_str() + line_start, line_end - line_start);
+            if (line.find('^') != std::string::npos &&
+                (line.find("*(") != std::string::npos || line.find('[') != std::string::npos)) {
+                xor_on_indexed_line = true;
+            }
+        }
+        line_start = line_end + 1;
+    }
+    if (!xor_on_indexed_line) return;
+
     hits.push_back({"Rolling XOR cipher"});
 }
 
 // XOR with a fixed constant repeated across iterations.
-// Signal: multiple XOR with the same 0xNN constant in a loop body.
+// Signal: multiple XOR-with-hex-literal lines that also touch indexed memory.
+//
+// The naive "^ 0x appears twice" rule fires constantly on SHA/MD5/AES because
+// their round functions XOR 32-bit constants into scalar registers. Requiring
+// the XOR to be on the SAME LINE as indexed memory restricts the hit to genuine
+// cipher patterns (data[i] ^= 0xNN) and filters out hash/round-function noise.
 static void detect_xor_constant(const std::string& code, std::vector<AlgoHit>& hits) {
-    // Look for XOR with 0x-prefixed constant (not 0x0)
-    // Simple heuristic: "^ 0x" appears at least twice
-    if (count_occurrences(code, "^ 0x") >= 2) {
-        hits.push_back({"XOR with constant"});
+    // Bail on known hash/cipher constants that legitimately produce many ^ 0x lines.
+    if (has(code, "0xd76aa478") || ihas(code, "0xd76aa478")) return;  // MD5
+    if (has(code, "0xe8c7b756") || ihas(code, "0xe8c7b756")) return;  // MD5
+    if (has(code, "0x428a2f98") || ihas(code, "0x428a2f98")) return;  // SHA-256
+    if (has(code, "0x67452301") || ihas(code, "0x67452301")) return;  // SHA-1
+    if (has(code, "0x5a827999") || ihas(code, "0x5a827999")) return;  // SHA-1 round
+    if (has(code, "0x9e3779b9") || ihas(code, "0x9e3779b9")) return;  // TEA
+
+    // Count lines that have both "^ 0x" and an indexed memory access.
+    int matched = 0;
+    size_t line_start = 0;
+    while (line_start < code.size()) {
+        size_t line_end = code.find('\n', line_start);
+        if (line_end == std::string::npos) line_end = code.size();
+        if (line_end > line_start) {
+            const std::string line(code.c_str() + line_start, line_end - line_start);
+            if (line.find("^ 0x") != std::string::npos &&
+                (line.find("*(") != std::string::npos || line.find('[') != std::string::npos)) {
+                ++matched;
+            }
+        }
+        line_start = line_end + 1;
     }
+    if (matched >= 2) hits.push_back({"XOR with constant"});
 }
 
 // ---------------------------------------------------------------------------
@@ -221,6 +280,63 @@ static void detect_aes_named(const std::string& code, std::vector<AlgoHit>& hits
         ihas(code, "mbedtls_aes_")    ||
         ihas(code, "nettle_aes")) {
         hits.push_back({"AES (library call)"});
+    }
+}
+
+// AES key schedule / key detection.
+// Signals beyond Rcon (already detected separately):
+//   - ARM64 hardware AES instructions visible as mnemonics in pseudocode
+//   - SubWord / RotWord helper names from a pure-SW key expansion
+//   - Key-size constants 16 / 24 / 32 appearing alongside a "key" token
+//   - Android Keystore key-generation APIs
+static void detect_aes_key(const std::string& code, std::vector<AlgoHit>& hits) {
+    // ARM64 hardware AES — Ghidra may emit instruction mnemonics directly
+    // when it cannot lift them to intrinsics.
+    if (has(code, "AESE") || has(code, "AESD") ||
+        has(code, "AESMC") || has(code, "AESIMC") ||
+        has(code, "aese") || has(code, "aesd") ||
+        has(code, "aesmc") || has(code, "aesimc")) {
+        hits.push_back({"AES (ARM64 hardware instruction)"});
+        return;
+    }
+    // Pure-SW key schedule: SubWord / RotWord helpers.
+    if (ihas(code, "SubWord") || ihas(code, "RotWord") ||
+        ihas(code, "subword") || ihas(code, "rotword") ||
+        ihas(code, "sub_word") || ihas(code, "rot_word")) {
+        hits.push_back({"AES key schedule (SubWord/RotWord)"});
+        return;
+    }
+    // Key-size branch: code checks for 16, 24, and 32 AND mentions "key".
+    // Covers the switch/if-else that selects AES-128/192/256.
+    bool has_key_ctx = ihas(code, "key") || ihas(code, "nk") ||
+                       ihas(code, "key_len") || ihas(code, "keylen") ||
+                       ihas(code, "key_size") || ihas(code, "keysize");
+    if (has_key_ctx) {
+        bool has_128 = has(code, "0x10") || has(code, " 16 ") || has(code, "=16") ||
+                       has(code, "==16") || has(code, "== 16");
+        bool has_192 = has(code, "0x18") || has(code, " 24 ") || has(code, "=24") ||
+                       has(code, "==24") || has(code, "== 24");
+        bool has_256 = has(code, "0x20") || has(code, " 32 ") || has(code, "=32") ||
+                       has(code, "==32") || has(code, "== 32");
+        if (has_128 && has_256) {
+            hits.push_back({"AES key size selection (128/192/256-bit)"});
+            return;
+        }
+        // Single key size with round-count constant (10 / 12 / 14 rounds)
+        int round_hits = 0;
+        if (has(code, "0xa") || has(code, "== 10") || has(code, "==10")) ++round_hits;
+        if (has(code, "0xc") || has(code, "== 12") || has(code, "==12")) ++round_hits;
+        if (has(code, "0xe") || has(code, "== 14") || has(code, "==14")) ++round_hits;
+        if (round_hits >= 2 && (has_128 || has_192 || has_256)) {
+            hits.push_back({"AES key schedule (round count)"});
+            return;
+        }
+    }
+    // Android Keystore key-generation
+    if (ihas(code, "AndroidKeyStore")   || ihas(code, "KeyGenerator")       ||
+        ihas(code, "SecretKeyFactory")  || ihas(code, "KeyStore.getInstance") ||
+        ihas(code, "KeyGenParameterSpec") || ihas(code, "android.security.keystore")) {
+        hits.push_back({"AES key via Android Keystore"});
     }
 }
 
@@ -294,6 +410,31 @@ static void detect_sha_named(const std::string& code, std::vector<AlgoHit>& hits
     }
 }
 
+// SHA verification — SHA digest followed by a comparison against an expected
+// value.  Ghidra pseudocode typically shows the result of SHA256/SHA1 passed
+// directly into memcmp or compared with == 0 / != 0.
+static void detect_sha_verification(const std::string& code, std::vector<AlgoHit>& hits) {
+    // Must have some SHA signal.
+    bool has_sha =
+        has(code, "0x428a2f98") || ihas(code, "0x428a2f98") ||   // SHA-256 K[0]
+        has(code, "0x71374491") || ihas(code, "0x71374491") ||   // SHA-256 K[1]
+        has(code, "0x67452301") || ihas(code, "0x67452301") ||   // SHA-1 H0
+        has(code, "0x5a827999") || ihas(code, "0x5a827999") ||   // SHA-1 K1
+        ihas(code, "SHA256_Final") || ihas(code, "SHA1_Final")   ||
+        ihas(code, "sha256_final") || ihas(code, "sha1_final")   ||
+        ihas(code, "SHA256_Update") || ihas(code, "SHA1_Update") ||
+        ihas(code, "EVP_sha256")   || ihas(code, "EVP_sha1");
+    if (!has_sha) return;
+
+    bool has_cmp =
+        ihas(code, "memcmp") || ihas(code, "bcmp") ||
+        ihas(code, "strcmp")  ||
+        has(code, "== 0")    || has(code, "!= 0");
+    if (has_cmp) {
+        hits.push_back({"SHA integrity verification (hash+compare)"});
+    }
+}
+
 // ---------------------------------------------------------------------------
 // MD5 detection
 // ---------------------------------------------------------------------------
@@ -310,6 +451,26 @@ static void detect_md5(const std::string& code, std::vector<AlgoHit>& hits) {
         ihas(code, "MD5_Final")  || ihas(code, "EVP_md5")    ||
         ihas(code, "mbedtls_md5")) {
         hits.push_back({"MD5 (library call)"});
+    }
+}
+
+// MD5 integrity verification — MD5 digest followed by a comparison.
+// Identical structure to SHA verification but keyed on MD5 constants/calls.
+static void detect_md5_verification(const std::string& code, std::vector<AlgoHit>& hits) {
+    bool has_md5 =
+        has(code, "0xd76aa478") || ihas(code, "0xd76aa478") ||
+        has(code, "0xe8c7b756") || ihas(code, "0xe8c7b756") ||
+        has(code, "0x242070db") || ihas(code, "0x242070db") ||
+        ihas(code, "MD5_Final")  || ihas(code, "md5_final")  ||
+        ihas(code, "MD5_Update") || ihas(code, "EVP_md5");
+    if (!has_md5) return;
+
+    bool has_cmp =
+        ihas(code, "memcmp") || ihas(code, "bcmp") ||
+        ihas(code, "strcmp")  ||
+        has(code, "== 0")    || has(code, "!= 0");
+    if (has_cmp) {
+        hits.push_back({"MD5 integrity verification (hash+compare)"});
     }
 }
 
@@ -611,6 +772,92 @@ static void detect_ripemd(const std::string& code, std::vector<AlgoHit>& hits) {
 }
 
 // ---------------------------------------------------------------------------
+// Common key material / key format detection
+// ---------------------------------------------------------------------------
+
+// Detects encoded or hardcoded key material in several common forms:
+//   - PEM armour headers (BEGIN PRIVATE KEY, BEGIN CERTIFICATE, …)
+//   - PKCS#1/8/12 string tokens
+//   - JWT / JWK patterns
+//   - Android Keystore API calls (key not stored in code but generated)
+//   - Hardcoded hex key string: 32+ consecutive hex chars in a string literal
+//     (= 128-bit key minimum; 64 hex chars = 256-bit AES key)
+//   - Hardcoded byte-array key: 16+ consecutive 0xNN, 0xNN, … literals
+//     on one logical line (typical of embedded AES/ChaCha key arrays)
+static void detect_key_material(const std::string& code, std::vector<AlgoHit>& hits) {
+    // PEM armour
+    if (has(code, "-----BEGIN") || has(code, "BEGIN PRIVATE KEY") ||
+        has(code, "BEGIN RSA PRIVATE KEY")  || has(code, "BEGIN EC PRIVATE KEY")  ||
+        has(code, "BEGIN PUBLIC KEY")       || has(code, "BEGIN CERTIFICATE")     ||
+        has(code, "BEGIN ENCRYPTED PRIVATE KEY")) {
+        hits.push_back({"PEM-encoded key / certificate"});
+    }
+
+    // PKCS tokens
+    if (ihas(code, "PKCS12") || ihas(code, "PKCS8") || ihas(code, "PKCS1") ||
+        ihas(code, "pkcs12") || ihas(code, "pkcs8") || ihas(code, "pkcs1")) {
+        hits.push_back({"PKCS key format"});
+    }
+
+    // JWT / JWK
+    // "eyJ" is the base64url encoding of '{"' — every JWT header starts with it.
+    if (has(code, "eyJ") ||
+        (ihas(code, "jwt")  && (ihas(code, "token") || ihas(code, "sign"))) ||
+        (ihas(code, "jwk")  && (ihas(code, "key")   || ihas(code, "set")))  ||
+        ihas(code, "alg\":\"RS") || ihas(code, "alg\":\"HS") ||
+        ihas(code, "alg\":\"ES")) {
+        hits.push_back({"JWT / JWK token handling"});
+    }
+
+    // Hardcoded hex key string — 32+ consecutive hex digits inside quotes.
+    // 32 hex = 128-bit (AES-128 key); 48 = 192-bit; 64 = 256-bit.
+    {
+        size_t pos = 0;
+        while ((pos = code.find('"', pos)) != std::string::npos) {
+            ++pos;
+            size_t start = pos;
+            while (pos < code.size() && std::isxdigit((unsigned char)code[pos])) ++pos;
+            size_t len = pos - start;
+            if (len >= 32 && pos < code.size() && code[pos] == '"') {
+                hits.push_back({"Hardcoded hex key string (" +
+                                std::to_string(len * 4) + "-bit)"});
+                break;
+            }
+        }
+    }
+
+    // Hardcoded byte-array key — 16+ "0xNN," or "0xNN }" consecutive tokens
+    // on a single logical line (compiler-initialised static key array).
+    // We walk line by line and count 0xNN tokens of exactly 2 hex digits.
+    {
+        size_t line_start = 0;
+        while (line_start < code.size()) {
+            size_t line_end = code.find('\n', line_start);
+            if (line_end == std::string::npos) line_end = code.size();
+            if (line_end > line_start) {
+                const std::string line(code.c_str() + line_start, line_end - line_start);
+                // Count "0x??" tokens where ?? are exactly 2 hex digits.
+                int byte_count = 0;
+                size_t p = 0;
+                while ((p = line.find("0x", p)) != std::string::npos) {
+                    p += 2;
+                    size_t hstart = p;
+                    while (p < line.size() &&
+                           std::isxdigit((unsigned char)line[p])) ++p;
+                    if (p - hstart == 2) ++byte_count;
+                }
+                if (byte_count >= 16) {
+                    hits.push_back({"Hardcoded key byte array (" +
+                                    std::to_string(byte_count * 8) + "-bit)"});
+                    break;
+                }
+            }
+            line_start = line_end + 1;
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Detection table — comment out any row to disable that detection entirely.
 // ---------------------------------------------------------------------------
 
@@ -627,14 +874,17 @@ static const DetectorFn kDetectors[] = {
     detect_aes_named,
     detect_aes_sbox,
     detect_aes_rcon,
+    detect_aes_key,           // ARM64 HW / SubWord / key-size selection
     // SHA family
     detect_sha256,
     detect_sha1,
     detect_sha512,
     detect_sha3,
     detect_sha_named,
+    detect_sha_verification,  // SHA + memcmp integrity check
     // MD5
     detect_md5,
+    detect_md5_verification,  // MD5 + memcmp integrity check
     // Stream ciphers
     detect_rc4,
     detect_chacha20,
@@ -657,6 +907,8 @@ static const DetectorFn kDetectors[] = {
     detect_ripemd,
     // Transport
     detect_tls,
+    // Key material / key formats
+    detect_key_material,
 };
 static const size_t kDetectorCount = sizeof(kDetectors) / sizeof(kDetectors[0]);
 
