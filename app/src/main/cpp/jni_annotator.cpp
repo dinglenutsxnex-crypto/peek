@@ -1576,6 +1576,21 @@ static std::string normalize_plus_neg(const std::string& code) {
 // what the code actually does in either path.
 // ---------------------------------------------------------------------------
 
+// Returns true when 'line' is exactly 'indent' followed by a bare '}'
+// (no other non-whitespace on the line).  Handles trailing \r from CRLF files.
+static bool is_bare_close(const std::string& line, const std::string& indent) {
+    size_t fc = line.find_first_not_of(" \t");
+    if (fc == std::string::npos) return false;            // blank line
+    if (fc != indent.size()) return false;                // wrong indent width
+    for (size_t k = 0; k < fc; ++k)
+        if (line[k] != indent[k]) return false;           // indent mismatch
+    // From fc onward, must be '}' then only whitespace/CR.
+    if (line[fc] != '}') return false;
+    for (size_t k = fc + 1; k < line.size(); ++k)
+        if (line[k] != ' ' && line[k] != '\t' && line[k] != '\r') return false;
+    return true;
+}
+
 static std::string collapse_atomic_refcount(const std::string& code) {
     if (code.find("pthread_create == 0") == std::string::npos) return code;
     if (code.find("ExclusiveMonitorPass")  == std::string::npos) return code;
@@ -1586,85 +1601,264 @@ static std::string collapse_atomic_refcount(const std::string& code) {
 
     size_t i = 0;
     while (i < lines.size()) {
-        // Look for the sentinel line.
+        // ---- Find the sentinel ----
         size_t p = lines[i].find("if (pthread_create == 0)");
         if (p == std::string::npos) { out.push_back(lines[i++]); continue; }
 
-        // Base indentation = everything before "if".
+        // Indentation of the 'if' keyword itself.
         std::string base_indent(lines[i].begin(), lines[i].begin() + p);
-        // Inner indentation is two spaces deeper.
+        // Body of the simple (non-threaded) branch sits one level deeper.
         std::string inner_indent = base_indent + "  ";
 
-        // ---- Step 1: count braces to collect the simple (if) branch body ----
-        int depth = 0;
-        for (char c : lines[i]) {
-            if (c == '{') ++depth;
-            else if (c == '}') --depth;
-        }
-        // After the sentinel line, depth should be exactly 1 (one open brace).
-        if (depth != 1) { out.push_back(lines[i++]); continue; }
-
+        // ---- Step 1: collect the simple-branch body ----
+        // Scan forward from i+1 until we find a line that is exactly
+        // base_indent + "}" (the closing brace of the if-block).
         size_t j = i + 1;
         std::vector<std::string> simple_body;
-
-        while (j < lines.size() && depth > 0) {
-            for (char c : lines[j]) {
-                if (c == '{') ++depth;
-                else if (c == '}') --depth;
+        bool found_if_close = false;
+        while (j < lines.size()) {
+            if (is_bare_close(lines[j], base_indent)) {
+                found_if_close = true;
+                ++j;   // skip the closing '}'
+                break;
             }
-            // Add line only while we are still inside the block (depth > 0
-            // AFTER decrement means the closing '}' itself is excluded).
-            if (depth > 0) simple_body.push_back(lines[j]);
+            simple_body.push_back(lines[j]);
             ++j;
         }
-        // j now points to the line after the closing '}' of the simple branch.
-
-        // ---- Step 2: skip optional blank lines then find "else {" ----
-        while (j < lines.size() &&
-               lines[j].find_first_not_of(" \t") == std::string::npos) ++j;
-
-        if (j >= lines.size() || lines[j].find("else") == std::string::npos) {
-            // No else block — emit unchanged.
+        if (!found_if_close || simple_body.empty()) {
             out.push_back(lines[i++]); continue;
         }
 
-        // ---- Step 3: scan the else block, verify ExclusiveMonitorPass ----
-        size_t else_line = j;
-        depth = 0;
-        for (char c : lines[j]) {
-            if (c == '{') ++depth;
-            else if (c == '}') --depth;
-        }
-        ++j;
+        // ---- Step 2: skip optional blank lines, then locate "else {" ----
+        while (j < lines.size() &&
+               lines[j].find_first_not_of(" \t\r\n") == std::string::npos) ++j;
 
-        bool has_exclusive = false;
-        while (j < lines.size() && depth > 0) {
-            if (lines[j].find("ExclusiveMonitorPass") != std::string::npos)
-                has_exclusive = true;
+        // ---- Step 3a: if/else variant — else { ... ExclusiveMonitorPass ... } ----
+        if (j < lines.size() && lines[j].find("else") != std::string::npos) {
+            ++j;   // skip the "else {" line itself
+
+            bool has_exclusive  = false;
+            bool found_else_close = false;
+            while (j < lines.size()) {
+                if (lines[j].find("ExclusiveMonitorPass") != std::string::npos)
+                    has_exclusive = true;
+                if (is_bare_close(lines[j], base_indent)) {
+                    found_else_close = true;
+                    ++j;   // skip the closing '}'
+                    break;
+                }
+                ++j;
+            }
+            if (!has_exclusive || !found_else_close) {
+                out.push_back(lines[i++]); continue;
+            }
+            // fall through to Step 4
+
+        // ---- Step 3b: if/do variant — do { ... ExclusiveMonitorPass ... } while ----
+        // Ghidra sometimes emits the atomic block as a bare do-while that
+        // immediately follows the if-block, without an else wrapper.
+        } else if (j < lines.size() && lines[j].find("do") != std::string::npos &&
+                   lines[j].find('{') != std::string::npos) {
+            // Scan the do-while using brace counting; } while (...) ends with
+            // depth hitting 0 on the same line.
+            int do_depth = 0;
             for (char c : lines[j]) {
-                if (c == '{') ++depth;
-                else if (c == '}') --depth;
+                if (c == '{') ++do_depth;
+                else if (c == '}') --do_depth;
             }
             ++j;
+            bool has_exclusive = false;
+            while (j < lines.size() && do_depth > 0) {
+                if (lines[j].find("ExclusiveMonitorPass") != std::string::npos)
+                    has_exclusive = true;
+                for (char c : lines[j]) {
+                    if (c == '{') ++do_depth;
+                    else if (c == '}') --do_depth;
+                }
+                ++j;
+            }
+            if (!has_exclusive) {
+                out.push_back(lines[i++]); continue;
+            }
+            // fall through to Step 4
+
+        } else {
+            out.push_back(lines[i++]); continue;
         }
 
-        if (!has_exclusive) { out.push_back(lines[i++]); continue; }
-
-        // ---- Step 4: emit the simple branch lines at base indentation ----
+        // ---- Step 4: emit the simple-branch lines at base indentation ----
         for (const std::string& sl : simple_body) {
             if (sl.size() >= inner_indent.size() &&
                 sl.substr(0, inner_indent.size()) == inner_indent) {
                 out.push_back(base_indent + sl.substr(inner_indent.size()));
             } else {
-                // Fallback: strip two leading spaces (or one tab) if present.
+                // Fallback: strip one tab or two spaces.
                 size_t skip = 0;
-                if (!sl.empty() && sl[0] == '\t') skip = 1;
+                if (!sl.empty() && sl[0] == '\t')            skip = 1;
                 else if (sl.size() >= 2 && sl[0] == ' ' && sl[1] == ' ') skip = 2;
                 out.push_back(sl.substr(skip));
             }
         }
 
-        i = j;   // resume past the entire if/else block
+        i = j;   // resume after the entire if/do or if/else construct
+    }
+
+    return join_lines(out);
+}
+
+// ---------------------------------------------------------------------------
+// U2c. Collapse the INVERTED ARM64 atomic-refcount pattern
+//
+// Ghidra sometimes emits the dual path with the guard flipped:
+//
+//   INDENT if (pthread_create != 0) {   // multi-threaded branch
+//   INDENT   [setup lines…]
+//   INDENT   do {
+//   INDENT     val = *ptr;
+//   INDENT     cVar = '\x01';
+//   INDENT     bVar = (bool)ExclusiveMonitorPass(ptr, 0x10);
+//   INDENT     if (bVar) { *ptr = val OP x; cVar = ExclusiveMonitorsStatus(); }
+//   INDENT   } while (cVar != '\0');
+//   INDENT   goto L_xxx;
+//   INDENT }
+//   // (single-threaded path continues from here — no explicit simple store)
+//
+// Collapsed to:
+//   INDENT [setup lines at base_indent…]
+//   INDENT val = *ptr;
+//   INDENT *ptr = val OP x;
+// ---------------------------------------------------------------------------
+static std::string collapse_inverted_atomic(const std::string& code) {
+    if (code.find("pthread_create != 0") == std::string::npos) return code;
+    if (code.find("ExclusiveMonitorPass")  == std::string::npos) return code;
+
+    std::vector<std::string> lines = split_lines(code);
+    std::vector<std::string> out;
+    out.reserve(lines.size());
+
+    size_t i = 0;
+    while (i < lines.size()) {
+        size_t p = lines[i].find("if (pthread_create != 0)");
+        if (p == std::string::npos) { out.push_back(lines[i++]); continue; }
+
+        std::string base_indent(lines[i].begin(), lines[i].begin() + p);
+        std::string if_inner  = base_indent + "  ";
+        std::string do_inner  = if_inner + "  ";       // inside do { }
+        std::string if_deepest = do_inner + "  ";      // inside do's inner if (bVar) { }
+
+        size_t j = i + 1;
+        std::vector<std::string> setup_lines;
+        std::vector<std::string> do_body;
+        bool found_do    = false;
+        bool found_close = false;
+        bool has_exclusive = false;
+
+        while (j < lines.size()) {
+            // Closing brace of the outer if (pthread_create != 0) block.
+            if (is_bare_close(lines[j], base_indent)) {
+                found_close = true;
+                ++j;
+                break;
+            }
+
+            // Start of the do-while sub-block.
+            if (!found_do &&
+                lines[j].find("do") != std::string::npos &&
+                lines[j].find('{')  != std::string::npos) {
+                found_do = true;
+                size_t k = j + 1;
+                while (k < lines.size()) {
+                    // } while (...); — the do-while footer
+                    size_t fc = lines[k].find_first_not_of(" \t");
+                    if (fc != std::string::npos &&
+                        lines[k][fc] == '}' &&
+                        lines[k].find("while") != std::string::npos) {
+                        ++k;
+                        break;
+                    }
+                    if (lines[k].find("ExclusiveMonitorPass") != std::string::npos)
+                        has_exclusive = true;
+                    do_body.push_back(lines[k]);
+                    ++k;
+                }
+                j = k;
+                continue;
+            }
+
+            // After the do-while: skip goto lines.
+            if (found_do && lines[j].find("goto") != std::string::npos) {
+                ++j; continue;
+            }
+
+            // Before the do-while: collect non-goto, non-blank setup lines.
+            if (!found_do && lines[j].find("goto") == std::string::npos &&
+                lines[j].find_first_not_of(" \t\r\n") != std::string::npos) {
+                setup_lines.push_back(lines[j]);
+            }
+            ++j;
+        }
+
+        if (!has_exclusive || !found_close) {
+            out.push_back(lines[i++]); continue;
+        }
+
+        // ---- Emit setup lines (if_inner → base_indent) ----
+        for (const std::string& sl : setup_lines) {
+            if (sl.size() >= if_inner.size() &&
+                sl.substr(0, if_inner.size()) == if_inner) {
+                out.push_back(base_indent + sl.substr(if_inner.size()));
+            } else {
+                out.push_back(sl);
+            }
+        }
+
+        // ---- Find ExclusiveMonitorPass line in do_body ----
+        size_t exc_idx = do_body.size();
+        for (size_t k = 0; k < do_body.size(); ++k) {
+            if (do_body[k].find("ExclusiveMonitorPass") != std::string::npos) {
+                exc_idx = k; break;
+            }
+        }
+
+        // ---- Pre-body: real load lines before the sentinel ----
+        for (size_t k = 0; k < exc_idx; ++k) {
+            const std::string& sl = do_body[k];
+            if (sl.find("'\\x01'") != std::string::npos) continue; // sentinel init
+            if (sl.find_first_not_of(" \t\r\n") == std::string::npos) continue;
+            if (sl.size() >= do_inner.size() &&
+                sl.substr(0, do_inner.size()) == do_inner) {
+                out.push_back(base_indent + sl.substr(do_inner.size()));
+            } else {
+                out.push_back(sl);
+            }
+        }
+
+        // ---- Inner-body: real store lines inside if (bVar) { } ----
+        size_t m = exc_idx + 1;
+        while (m < do_body.size() &&
+               do_body[m].find("if (") == std::string::npos) ++m;
+        if (m < do_body.size()) {
+            ++m; // skip "if (...) {" line
+            while (m < do_body.size()) {
+                const std::string& sl = do_body[m];
+                if (is_bare_close(sl, do_inner)) break;
+                if (sl.find("ExclusiveMonitorsStatus") != std::string::npos) { ++m; continue; }
+                if (sl.find("'\\x01'") != std::string::npos)                 { ++m; continue; }
+                if (sl.find_first_not_of(" \t\r\n") == std::string::npos)    { ++m; continue; }
+                if (sl.size() >= if_deepest.size() &&
+                    sl.substr(0, if_deepest.size()) == if_deepest) {
+                    out.push_back(base_indent + sl.substr(if_deepest.size()));
+                } else if (sl.size() >= do_inner.size() &&
+                           sl.substr(0, do_inner.size()) == do_inner) {
+                    out.push_back(base_indent + sl.substr(do_inner.size()));
+                } else {
+                    out.push_back(sl);
+                }
+                ++m;
+            }
+        }
+
+        i = j;  // resume after the entire if (pthread_create != 0) { } block
     }
 
     return join_lines(out);
@@ -2430,7 +2624,7 @@ static JniKind detect_kind(const std::string& name) {
 
 // Cache version tag — prepended to stored pseudocode so stale entries
 // are auto-invalidated.  Must NOT contain characters in Ghidra's C output.
-const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V24\x01\n";
+const char* JNI_ANNOTATOR_CACHE_TAG = "\x01PEEK_ANN_V26\x01\n";
 
 std::string jni_annotate(const std::string& func_name,
                           const std::string& pseudocode) {
@@ -2502,8 +2696,11 @@ std::string jni_annotate(const std::string& func_name,
 
     // ---- U2b. Collapse ARM64 LDXR/STXR atomic refcount pattern -------------
     // Replaces the Ghidra-emitted pthread_create==0 / ExclusiveMonitorPass
-    // boilerplate (~100 occurrences per file) with the simple branch body.
+    // boilerplate with the simple branch body.  Two structural variants:
+    //   U2b-i : if (pthread_create == 0) { simple } else { do { atomic } }
+    //   U2b-ii: if (pthread_create != 0) { do { atomic } goto; }  (inverted)
     result = collapse_atomic_refcount(result);
+    result = collapse_inverted_atomic(result);
 
     // -----------------------------------------------------------------------
     // JNI-specific passes — only for JNI_OnLoad / JNI_OnUnload / Java_*

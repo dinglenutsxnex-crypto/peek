@@ -31,7 +31,12 @@ description: The ordered post-processing passes applied after Ghidra decompiles 
 - U0c: `resolve_ghidra_pseudoops` — CONCAT/CARRY/SCARRY/SBORROW/SUB expansions.
 - U1: `strip_stack_canary` — remove tpidr_el0 / canary boilerplate.
 - U2: `rename_return_var` — rename sole return accumulator to `ret`.
-- U2b: `collapse_atomic_refcount` — collapses the ARM64 LDXR/STXR exclusive-monitor std::string refcount pattern. Detects `if (pthread_create == 0) { ... } else { do { ExclusiveMonitorPass ... } while (...); }` (~100 occurrences per file) and replaces with just the simple branch body at one less indent level.
+- U2b: `collapse_atomic_refcount` — collapses the ARM64 LDXR/STXR exclusive-monitor refcount pattern. Three structural variants handled:
+  - if/else: `if (pthread_create == 0) { simple } else { do { ExclusiveMonitorPass } while }`
+  - if/do: `if (pthread_create == 0) { simple } do { ExclusiveMonitorPass } while` (no else wrapper)
+  Uses `is_bare_close(line, indent)` helper (indentation-level matching) — NOT brace counting, which was the bug in V24 that silently failed. V25 rewrote to indentation-based approach.
+- U2c: `collapse_inverted_atomic` — handles the inverted form `if (pthread_create != 0) { [setup;] do { ExclusiveMonitorPass } while (...); goto L; }` → emits setup + real load/store at base_indent, drops the if wrapper and goto.
+- Combined V25 collapse: 268 blocks across 124 of 149 affected files (25 remaining with harder patterns: bare do-while in std:: library functions, 6 goto-form blocks).
 - U3–U6: write-only var removal, dead-init removal, implicit return fix, generic var rename.
 - JNI-specific (J1–J6): signature fix, param renames, vtable calls, JNI constants, local type inference, RegisterNatives collapse.
 
@@ -49,7 +54,7 @@ The walk-back loop at the "Ram" search in Pass 1 now consumes **all** lowercase 
 
 **Why:** The DB caches pseudocode per function. Any pass change produces different output. `JNI_ANNOTATOR_CACHE_TAG` (in `jni_annotator.cpp`, referenced in `peek_jni.cpp`) is prepended; a mismatch triggers auto re-decompilation.
 
-**How to apply:** Bump the tag whenever any pass changes output. Current tag: `"\x01PEEK_ANN_V24\x01\n"`.
+**How to apply:** Bump the tag whenever any pass changes output. Current tag: `"\x01PEEK_ANN_V26\x01\n"`.
 
 **Important:** Brace-counting scripts must be string/char-aware — the tag contains `\x01` escapes.
 
