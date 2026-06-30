@@ -59,7 +59,7 @@
 // the crash happens inside a pre-compiled native library, it cannot be caught
 // by C++ try/catch — only a signal handler can intercept it.
 //
-// Strategy: before each peek_decompile_bytes_v2 call, temporarily replace
+// Strategy: before each peek_decompile_elf call, temporarily replace
 // the existing SIGSEGV handler with a guard that calls siglongjmp back to
 // the established recovery point.  On recovery we log the incident, skip
 // the pseudocode for that function, and restore the original handler so the
@@ -2468,14 +2468,9 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         return env->NewStringUTF("");
     }
 
-    // Unique temp file per function to allow future parallelism.
-    std::ostringstream tmp_ss;
-    tmp_ss << ctx->tmp_dir << "/decomp_" << std::hex << (int64_t)func_id << ".bin";
-    std::string tmp_path = tmp_ss.str();
-
-    // Build the flat C-struct array of typed function signatures (v3 sigs).
-    // We keep the strings alive in sig_cache (which owns them) — the PeekFuncSig
-    // pointers are valid for the duration of this call.
+    // Build the flat C-struct array of typed function signatures.
+    // Strings are owned by sig_cache and remain valid for the duration of this
+    // call.  ELF symbol labelling is now handled on-demand inside PeekScope.
     std::vector<PeekFuncSig> c_sigs;
     c_sigs.reserve(ctx->sig_cache.size());
     for (const auto& s : ctx->sig_cache) {
@@ -2487,36 +2482,6 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
         cs.param_count = s.param_count;
         cs.params_csv  = s.params_csv.empty() ? nullptr : s.params_csv.c_str();
         c_sigs.push_back(cs);
-    }
-
-    // Build comprehensive ELF label array (v3 dsyms).
-    // All ELF symbols (functions + data objects) are injected into Ghidra's
-    // scope before decompilation so the decompiler emits real names directly
-    // instead of auto-generating FUN_addr / DAT_addr tokens.
-    // dsym_names keeps the std::string storage alive; c_dsyms holds raw
-    // const char* pointers into that storage.  Reserve upfront so that
-    // push_back never causes a reallocation that would invalidate .c_str().
-    std::vector<std::string> dsym_names;
-    std::vector<PeekDataSym> c_dsyms;
-    dsym_names.reserve(elf.symbols.size() + elf.functions.size());
-    c_dsyms.reserve(elf.symbols.size() + elf.functions.size());
-    for (const auto& sym : elf.symbols) {
-        if (sym.address == 0 || sym.name.empty() || sym.address == fn.address) continue;
-        dsym_names.push_back(sym.name);
-        PeekDataSym ds;
-        ds.address = sym.address;
-        ds.name    = dsym_names.back().c_str();
-        ds.is_func = (sym.type == STT_FUNC) ? 1 : 0;
-        c_dsyms.push_back(ds);
-    }
-    for (const auto& func : elf.functions) {
-        if (func.address == 0 || func.name.empty() || func.address == fn.address) continue;
-        dsym_names.push_back(func.name);
-        PeekDataSym ds;
-        ds.address = func.address;
-        ds.name    = dsym_names.back().c_str();
-        ds.is_func = 1;
-        c_dsyms.push_back(ds);
     }
 
     // ------------------------------------------------------------------
@@ -2536,11 +2501,12 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
 
     g_decomp_active = true;
     if (sigsetjmp(g_decomp_jmp, /*savemask=*/1) == 0) {
-        result_cstr = peek_decompile_bytes_v3(
-            data, (size_t)code_len,
-            fn.name.c_str(), tmp_path.c_str(), (uint64_t)fn.address,
-            c_sigs.empty()  ? nullptr : c_sigs.data(),  c_sigs.size(),
-            c_dsyms.empty() ? nullptr : c_dsyms.data(), c_dsyms.size(),
+        result_cstr = peek_decompile_elf(
+            elf,
+            fn.name.c_str(),
+            (uint64_t)fn.address,
+            (uint64_t)code_len,
+            c_sigs.empty() ? nullptr : c_sigs.data(), c_sigs.size(),
             &inferred);
         g_decomp_active = false;
     } else {

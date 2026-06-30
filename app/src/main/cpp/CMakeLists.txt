@@ -114,6 +114,9 @@ add_library(peek_native SHARED
     disassembler.cpp
     xref_detector.cpp
     db_cache.cpp
+    peek_load_image.cpp
+    peek_scope.cpp
+    peek_architecture.cpp
     decompiler_bridge.cpp
     jni_annotator.cpp
     algo_detector.cpp
@@ -122,8 +125,11 @@ add_library(peek_native SHARED
     peek_jni.cpp
 )
 
-# decompiler_bridge.cpp wraps Ghidra headers — needs exceptions + RTTI.
+# These files wrap Ghidra headers — need exceptions + RTTI.
 set_source_files_properties(
+    peek_load_image.cpp
+    peek_scope.cpp
+    peek_architecture.cpp
     decompiler_bridge.cpp
     PROPERTIES COMPILE_FLAGS "-fexceptions -frtti"
 )
