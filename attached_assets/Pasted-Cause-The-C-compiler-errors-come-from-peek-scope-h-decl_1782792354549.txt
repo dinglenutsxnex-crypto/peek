@@ -1,0 +1,46 @@
+Cause
+- The C++ compiler errors come from peek_scope.h declaring two member functions with the override specifier while their counterparts in the base class are not virtual (error: "only virtual member functions can be marked 'override'"). These errors stop the native build:
+
+  app/src/main/cpp/peek_scope.h:81:51: error: only virtual member functions can be marked 'override'
+  app/src/main/cpp/peek_scope.h:84:50: error: only virtual member functions can be marked 'override'
+
+What to change (minimal fix)
+- Remove the override specifier from those two functions in app/src/main/cpp/peek_scope.h so the derived class does not claim to override non-virtual base methods.
+
+Patch (replace the findBefore/findAfter methods)
+Original (lines ~81–86):
+  SymbolEntry* findBefore(const Address&) const override {
+      throw LowlevelError("PeekScope::findBefore unimplemented");
+  }
+  SymbolEntry* findAfter(const Address&) const override {
+      throw LowlevelError("PeekScope::findAfter unimplemented");
+  }
+
+Replace with:
+  SymbolEntry* findBefore(const Address&) const {
+      throw LowlevelError("PeekScope::findBefore unimplemented");
+  }
+  SymbolEntry* findAfter(const Address&) const {
+      throw LowlevelError("PeekScope::findAfter unimplemented");
+  }
+
+(source file: https://github.com/dinglenutsxnex-crypto/peek/blob/bde698829bb970d7872f5468f20106bc825e911d/app/src/main/cpp/peek_scope.h)
+
+Why this fixes it
+- The compiler enforces that override may only be used when a base class has a virtual function with an identical signature. Removing override matches the actual base class API and allows this translation unit to compile. If your intent was to override, instead modify the base Scope class to declare the corresponding methods as virtual and keep the same signatures — but that is a broader API change and may have more ripple effects.
+
+Alternative (if you intended to override)
+- Update the base class (Scope) declarations to include virtual for findBefore/findAfter with the same const signature, e.g. in the base header:
+  virtual SymbolEntry* findBefore(const Address&) const;
+  virtual SymbolEntry* findAfter(const Address&) const;
+- Then leaving override in PeekScope is correct. Only do this if you confirm the base class should expose these operations as virtual.
+
+Next steps to apply
+1. Edit app/src/main/cpp/peek_scope.h and make the two-line change above.
+2. Commit & push:
+   git add app/src/main/cpp/peek_scope.h
+   git commit -m "Fix: remove incorrect override specifiers from PeekScope::findBefore/findAfter"
+   git push
+3. Re-run the workflow / CI.
+
+If the build moves past this point and fails on other native compile errors, share the next failing log section and I’ll propose the next code fixes.

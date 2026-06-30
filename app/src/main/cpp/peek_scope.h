@@ -78,10 +78,10 @@ public:
     SymbolEntry* findOverlap(const Address&, int4) const override {
         throw LowlevelError("PeekScope::findOverlap unimplemented");
     }
-    SymbolEntry* findBefore(const Address&) const override {
+    SymbolEntry* findBefore(const Address&) const {
         throw LowlevelError("PeekScope::findBefore unimplemented");
     }
-    SymbolEntry* findAfter(const Address&) const override {
+    SymbolEntry* findAfter(const Address&) const {
         throw LowlevelError("PeekScope::findAfter unimplemented");
     }
     void findByName(const string&, vector<Symbol*>&) const override {
