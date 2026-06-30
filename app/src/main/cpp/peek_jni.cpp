@@ -2387,6 +2387,9 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     DbFunction fn = ctx->db->get_function_by_id((int64_t)func_id);
     if (fn.id < 0) {
         LOGE("Function not found funcId=%lld", (long long)func_id);
+        ctx->last_error = "function id " + std::to_string((long long)func_id) +
+                          " not found in DB (binary_id=" +
+                          std::to_string((long long)ctx->binary_id) + ")";
         return env->NewStringUTF("");
     }
 
@@ -2415,6 +2418,8 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     ElfParseResult elf = elf_parse(ctx->file_path);
     if (!elf.ok) {
         LOGE("ELF re-parse failed: %s", elf.error.c_str());
+        ctx->last_error = "ELF re-parse failed: " + elf.error +
+                          " (path=" + ctx->file_path + ")";
         return env->NewStringUTF("");
     }
 
@@ -2442,6 +2447,24 @@ Java_com_nex_peek_PeekNative_nativeDecompileFunction(JNIEnv* env, jobject,
     if (!data) {
         LOGE("va_to_ptr failed addr=0x%llx code_len=%llu",
              (unsigned long long)fn.address, (unsigned long long)code_len);
+        // Build a diagnostic: list all executable sections so the caller
+        // can see whether the function address falls in any of them.
+        std::ostringstream va_err;
+        va_err << "va_to_ptr: function " << fn.name
+               << " addr=0x" << std::hex << fn.address
+               << " size=" << std::dec << code_len
+               << " not in any executable section (";
+        bool first = true;
+        for (const auto& sec : elf.sections) {
+            if (!sec.is_executable()) continue;
+            if (!first) va_err << ", ";
+            va_err << "0x" << std::hex << sec.address
+                   << "+0x" << sec.size;
+            first = false;
+        }
+        if (first) va_err << "NO EXECUTABLE SECTIONS";
+        va_err << ") fn.size=" << std::dec << fn.size;
+        ctx->last_error = va_err.str();
         return env->NewStringUTF("");
     }
 

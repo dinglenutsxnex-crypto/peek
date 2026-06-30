@@ -467,6 +467,10 @@ char* peek_decompile_bytes_v3(const uint8_t*     bytes,
             LOGI_B("[S2.5b] injecting %zu ELF labels for %s",
                    dsym_count, func_name);
             Scope* lscope = arch->symboltab->getGlobalScope();
+            if (!lscope) {
+                LOGE_B("[S2.5b] getGlobalScope() returned null for %s — skipping",
+                       func_name);
+            } else {
             size_t dsym_ok = 0;
             for (size_t i = 0; i < dsym_count; ++i) {
                 const PeekDataSym& ds = dsyms[i];
@@ -486,6 +490,7 @@ char* peek_decompile_bytes_v3(const uint8_t*     bytes,
             }
             LOGI_B("[S2.5b] injected %zu/%zu ELF labels for %s",
                    dsym_ok, dsym_count, func_name);
+            } // end else (lscope != null)
         }
 
         // ------------------------------------------------------------------
